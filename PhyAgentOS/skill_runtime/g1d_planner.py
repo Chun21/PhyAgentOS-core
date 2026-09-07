@@ -128,8 +128,13 @@ def validate_arm_pose(target: Mapping[str, Any]) -> ArmPose:
         if not isinstance(dex1, Mapping) or "opening" not in dex1:
             raise PoseValidationError("dex1 must be an object with an opening value")
         opening = dex1["opening"]
-        if not isinstance(opening, (int, float)) or not 0.0 <= float(opening) <= 1.0:
-            raise PoseValidationError("dex1.opening must be within [0, 1]")
+        if (
+            isinstance(opening, bool)
+            or not isinstance(opening, (int, float))
+            or not math.isfinite(float(opening))
+            or not 0.0 <= float(opening) <= 1.0
+        ):
+            raise PoseValidationError("dex1.opening must be finite and within [0, 1]")
         dex1_opening = float(opening)
 
     return ArmPose(
@@ -328,6 +333,8 @@ class PosePlan:
     joint_solution: JointSolution
     checks: tuple[PlanCheck, ...]
     trajectory: PlannedMotionSummary
+    dex1_left_opening: float | None = None
+    dex1_right_opening: float | None = None
 
     @property
     def checks_passed(self) -> bool:
@@ -518,6 +525,8 @@ class G1DPlanner:
             joint_solution=solution,
             checks=tuple(checks),
             trajectory=trajectory,
+            dex1_left_opening=left_pose.dex1_opening,
+            dex1_right_opening=right_pose.dex1_opening,
         )
         self._plans[plan.plan_id] = plan
         self._evict_expired(now)

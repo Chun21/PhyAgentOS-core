@@ -17,7 +17,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from PhyAgentOS.skill_runtime.g1d_dex1 import (
+    DEX1_SIDES,
+    Dex1CommandSample,
+    Dex1Error,
+    Dex1Integration,
+)
 from PhyAgentOS.skill_runtime.g1d_adapter import (
+    AdapterError,
     ARM_SLOTS,
     G1DAdapter,
     LowCmdFrame,
@@ -52,6 +59,10 @@ class UnknownInvocationError(ExecutorError):
 
 class InvalidDeadlineError(ExecutorError):
     """The operation deadline is outside the admitted range."""
+
+
+class Dex1GateError(ExecutorError):
+    """A requested Dex1 side failed the readiness gate."""
 
 
 class ActionStatus(enum.Enum):
@@ -183,8 +194,10 @@ class G1DExecutor:
         hold_cycles: int = DEFAULT_HOLD_CYCLES,
         stop_margin_s: float = DEFAULT_STOP_MARGIN_S,
         watchdog_missed_cycles: int = DEFAULT_WATCHDOG_MISSED_CYCLES,
+        dex1: Dex1Integration | None = None,
     ) -> None:
         self._adapter = adapter
+        self._dex1 = dex1
         self._planner = planner
         self._clock = clock
         self._sink = sink
@@ -212,6 +225,7 @@ class G1DExecutor:
         self._target_q: tuple[float, ...] = (0.0,) * 14
         self._last_command: LowCmdFrame | None = None
         self._plan: PosePlan | None = None
+        self._requested_dex1: dict[str, float | None] = {"left": None, "right": None}
 
     # ------------------------------------------------------------------
     # execute_pose admission
@@ -246,6 +260,19 @@ class G1DExecutor:
         self._plan = plan
         # Readiness gate: fresh CRC-valid state, approved mode, safety healthy.
         self._adapter.require_ready()
+        # Optional external Dex1: only *requested* openings are gated; a
+        # missing opening is non-blocking and the service may be absent.
+        if plan.dex1_left_opening is not None or plan.dex1_right_opening is not None:
+            if self._dex1 is None:
+                raise ExecutorError(
+                    "plan requests a Dex1 opening but no Dex1 integration is configured"
+                )
+            try:
+                self._dex1.require_ready_for(
+                    {"left": plan.dex1_left_opening, "right": plan.dex1_right_opening}
+                )
+            except Dex1Error as error:
+                raise Dex1GateError(str(error)) from error
 
         now = self._clock()
         invocation = Invocation(
@@ -258,6 +285,10 @@ class G1DExecutor:
             deadline_at=now + float(operation_deadline_s),
         )
         self._invocations[invocation.invocation_id] = invocation
+        self._requested_dex1 = {
+            "left": plan.dex1_left_opening,
+            "right": plan.dex1_right_opening,
+        }
         self._seq = 0
         self._by_caller_plan[(caller_id, plan_id)] = invocation.invocation_id
         self._active = invocation
@@ -317,6 +348,45 @@ class G1DExecutor:
     def active_invocation(self) -> Invocation | None:
         return self._active
 
+    def query_state(self) -> dict[str, Any]:
+        """g1d.dual_arm.state output: runtime readiness, action readiness, Dex1."""
+
+        try:
+            adapter_state = self._adapter.query_state()
+            runtime_ready = True
+            state_age_ms: float | None = adapter_state.state_age_ms
+            safety_gate: str = adapter_state.safety_gate
+        except AdapterError as error:
+            runtime_ready = False
+            state_age_ms = None
+            safety_gate = type(error).__name__
+        try:
+            self._adapter.require_ready()
+            gate_ready = True
+        except AdapterError:
+            gate_ready = False
+        action_ready = gate_ready and not (
+            self._active is not None and not self._active.status.is_terminal
+        )
+        dex1: dict[str, dict[str, Any]] = {}
+        for side in DEX1_SIDES:
+            if self._dex1 is None:
+                dex1[side] = {"status": "absent", "opening": None, "age_ms": None}
+                continue
+            readiness = self._dex1.readiness(side)
+            dex1[side] = {
+                "status": readiness.status.value,
+                "opening": readiness.opening,
+                "age_ms": readiness.age_ms,
+            }
+        return {
+            "runtime_ready": runtime_ready,
+            "action_ready": action_ready,
+            "state_age_ms": state_age_ms,
+            "safety_gate": safety_gate,
+            "dex1": dex1,
+        }
+
     def mark_unknown(self, invocation_id: str, *, reason: str) -> None:
         """Record an unresolved physical outcome (transport loss, crash)."""
 
@@ -358,6 +428,20 @@ class G1DExecutor:
                 self._emit(now, self._last_command, phase=StreamPhase.HOLD)
             self._finish(invocation, ActionStatus.FAILED, reason=type(error).__name__)
             return
+
+        # Requested Dex1 streams must stay healthy for the whole Action.
+        if self._dex1 is not None and any(
+            opening is not None for opening in self._requested_dex1.values()
+        ):
+            for side, opening in self._requested_dex1.items():
+                if opening is None:
+                    continue
+                readiness = self._dex1.readiness(side)
+                if not readiness.ok:
+                    self._watchdog_stop(
+                        invocation, now, reason=f"dex1_{side}_{readiness.status.value}"
+                    )
+                    return
 
         # Writer watchdog: ten missed 2 ms command cycles.
         if (
@@ -413,7 +497,20 @@ class G1DExecutor:
                 if emit_t >= post_hold_until:
                     self._finish(invocation, ActionStatus.SUCCEEDED, reason=None)
                     return
+            self._emit_dex1(emit_t)
             self._next_emit_t = emit_t + self._control_period_s
+
+    def _emit_dex1(self, t: float) -> None:
+        """Stream requested opening commands to the external Dex1 topics."""
+
+        if self._dex1 is None:
+            return
+        for side, opening in self._requested_dex1.items():
+            if opening is None:
+                continue
+            self._sink.write(
+                Dex1CommandSample(t_s=t, command=self._dex1.command(side, opening))
+            )
 
     def _arm_motion(self, invocation: Invocation) -> None:
         plan = self._plan
