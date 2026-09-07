@@ -16,7 +16,10 @@ profiles:
       - g1d-runtime
     required_assets:
       - profiles/real-g1d/kinematics.json
-    required_environment: []
+    required_environment:
+      - PAOS_G1D_DDS_DOMAIN
+      - PAOS_G1D_URDF_PATH
+      - PAOS_G1D_IK_CONFIG
     environment:
       PAOS_G1D_PROFILE: real-g1d
       PAOS_G1D_CONTROL_TOPIC: rt/lowcmd
