@@ -341,7 +341,9 @@ class PosePlan:
         return all(check.passed for check in self.checks)
 
 
-def _quaternion_angle_deg(a: Sequence[float], b: Sequence[float]) -> float:
+def quaternion_angle_deg(a: Sequence[float], b: Sequence[float]) -> float:
+    """Angle between two quaternions in degrees (sign-insensitive)."""
+
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     return math.degrees(2.0 * math.acos(min(1.0, abs(dot))))
 
@@ -441,8 +443,8 @@ class G1DPlanner:
         fk_left, fk_right = self._kinematics.solve_fk(solution.left_q, solution.right_q)
         left_pos_error = math.dist(fk_left.position_m, left_pose.position_m)
         right_pos_error = math.dist(fk_right.position_m, right_pose.position_m)
-        left_ori_error = _quaternion_angle_deg(fk_left.orientation_xyzw, left_pose.orientation_xyzw)
-        right_ori_error = _quaternion_angle_deg(
+        left_ori_error = quaternion_angle_deg(fk_left.orientation_xyzw, left_pose.orientation_xyzw)
+        right_ori_error = quaternion_angle_deg(
             fk_right.orientation_xyzw, right_pose.orientation_xyzw
         )
         position_ok = max(left_pos_error, right_pos_error) <= self._position_tolerance_m
@@ -621,6 +623,7 @@ __all__ = [
     "PlanExpiredError",
     "PlannerError",
     "PlannedMotionSummary",
+    "quaternion_angle_deg",
     "PosePlan",
     "PoseValidationError",
     "TOTAL_MOTOR_SLOTS",
