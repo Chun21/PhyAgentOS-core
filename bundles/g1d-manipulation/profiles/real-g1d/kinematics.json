@@ -5,6 +5,13 @@
   "left_slots": [15, 16, 17, 18, 19, 20, 21],
   "right_slots": [22, 23, 24, 25, 26, 27, 28],
   "preserved_slots": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  "ik_solver": "unirobot.G1_D_DEX1_ArmIK",
+  "arm_joint_limit_rad": 2.8,
+  "max_joint_velocity_rad_per_s": 0.5,
+  "max_joint_acceleration_rad_per_s2": 2.0,
+  "plan_ttl_s": 5.0,
+  "position_tolerance_m": 0.02,
+  "orientation_tolerance_deg": 5.0,
   "trajectory": {
     "interpolation": "quintic",
     "minimum_duration_s": 1.0,
