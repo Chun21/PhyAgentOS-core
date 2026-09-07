@@ -6,37 +6,124 @@
     "operation": "plan_pose",
     "description": "Validate and plan a bilateral arm target without motion.",
     "max_concurrency": 8,
-    "robot_frame_profile": {"base_frame": "g1d_base", "tool_frame": "tcp", "position_unit": "m", "orientation": "normalized_xyzw", "position_tolerance_m": 0.02, "orientation_tolerance_deg": 5},
+    "robot_frame_profile": {
+      "base_frame": "g1d_base",
+      "tool_frame": "tcp",
+      "position_unit": "m",
+      "orientation": "normalized_xyzw",
+      "position_tolerance_m": 0.02,
+      "orientation_tolerance_deg": 5
+    },
     "input_schema": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["left", "right"],
+      "required": [
+        "left",
+        "right"
+      ],
       "properties": {
-        "left": {"$ref": "#/$defs/target"},
-        "right": {"$ref": "#/$defs/target"},
-        "deadline_s": {"type": "number", "minimum": 1, "maximum": 120}
+        "left": {
+          "$ref": "#/$defs/target"
+        },
+        "right": {
+          "$ref": "#/$defs/target"
+        },
+        "deadline_s": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 120
+        }
       },
       "$defs": {
         "target": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["frame_id", "position_m", "orientation_xyzw"],
+          "required": [
+            "frame_id",
+            "position_m",
+            "orientation_xyzw"
+          ],
           "properties": {
-            "frame_id": {"type": "string", "minLength": 1},
-            "position_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
-            "orientation_xyzw": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
-            "dex1": {"$ref": "#/$defs/dex1"}
+            "frame_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "position_m": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number"
+              }
+            },
+            "orientation_xyzw": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": "number"
+              }
+            },
+            "dex1": {
+              "$ref": "#/$defs/dex1"
+            }
           }
         },
         "dex1": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["opening"],
-          "properties": {"opening": {"type": "number", "minimum": 0, "maximum": 1}}
+          "required": [
+            "opening"
+          ],
+          "properties": {
+            "opening": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
         }
       }
     },
-    "output_schema": {"type": "object", "additionalProperties": false, "required": ["plan_id", "expires_at", "binding"], "properties": {"plan_id": {"type": "string", "minLength": 1}, "expires_at": {"type": "string", "minLength": 1}, "binding": {"type": "object", "additionalProperties": false, "required": ["skill_version", "runtime_instance_id", "target_digest"], "properties": {"skill_version": {"type": "string"}, "runtime_instance_id": {"type": "string"}, "target_digest": {"type": "string"}}}}}
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_id",
+        "expires_at",
+        "binding"
+      ],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expires_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binding": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "skill_version",
+            "runtime_instance_id",
+            "target_digest"
+          ],
+          "properties": {
+            "skill_version": {
+              "type": "string"
+            },
+            "runtime_instance_id": {
+              "type": "string"
+            },
+            "target_digest": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
   },
   "g1d.dual_arm.execute_pose": {
     "tool_id": "g1d.dual_arm.execute_pose",
@@ -45,9 +132,53 @@
     "operation": "execute_pose",
     "description": "Execute one validated bilateral plan as an atomic physical Action.",
     "max_concurrency": 1,
-    "robot_frame_profile": {"base_frame": "g1d_base", "tool_frame": "tcp", "position_unit": "m", "orientation": "normalized_xyzw", "position_tolerance_m": 0.02, "orientation_tolerance_deg": 5},
-    "input_schema": {"type": "object", "additionalProperties": false, "required": ["plan_id"], "properties": {"plan_id": {"type": "string", "minLength": 1}, "operation_deadline_s": {"type": "number", "minimum": 1, "maximum": 120}}},
-    "output_schema": {"type": "object", "additionalProperties": false, "required": ["invocation_id", "attempt_id"], "properties": {"invocation_id": {"type": "string"}, "attempt_id": {"type": "string"}}}
+    "robot_frame_profile": {
+      "base_frame": "g1d_base",
+      "tool_frame": "tcp",
+      "position_unit": "m",
+      "orientation": "normalized_xyzw",
+      "position_tolerance_m": 0.02,
+      "orientation_tolerance_deg": 5
+    },
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_id",
+        "caller_id"
+      ],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation_deadline_s": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 120
+        },
+        "caller_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invocation_id",
+        "attempt_id"
+      ],
+      "properties": {
+        "invocation_id": {
+          "type": "string"
+        },
+        "attempt_id": {
+          "type": "string"
+        }
+      }
+    }
   },
   "g1d.dual_arm.state": {
     "tool_id": "g1d.dual_arm.state",
@@ -56,8 +187,33 @@
     "operation": "state",
     "description": "Read current bilateral arm, safety, and external Dex1 readiness state.",
     "max_concurrency": 8,
-    "input_schema": {"type": "object", "additionalProperties": false, "properties": {}},
-    "output_schema": {"type": "object", "additionalProperties": false, "required": ["runtime_ready", "action_ready"], "properties": {"runtime_ready": {"type": "boolean"}, "action_ready": {"type": "boolean"}, "state_age_ms": {"type": "number"}, "safety_gate": {"type": "string"}}}
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    },
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_ready",
+        "action_ready"
+      ],
+      "properties": {
+        "runtime_ready": {
+          "type": "boolean"
+        },
+        "action_ready": {
+          "type": "boolean"
+        },
+        "state_age_ms": {
+          "type": "number"
+        },
+        "safety_gate": {
+          "type": "string"
+        }
+      }
+    }
   },
   "g1d.dual_arm.stop": {
     "tool_id": "g1d.dual_arm.stop",
@@ -66,7 +222,32 @@
     "operation": "stop",
     "description": "Idempotently request a controlled stop for the active bilateral Action.",
     "max_concurrency": 1,
-    "input_schema": {"type": "object", "additionalProperties": false, "properties": {"invocation_id": {"type": "string", "minLength": 1}}},
-    "output_schema": {"type": "object", "additionalProperties": false, "required": ["status"], "properties": {"status": {"type": "string", "enum": ["accepted", "already_stopped", "unknown"]}}}
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "invocation_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "already_stopped",
+            "unknown"
+          ]
+        }
+      }
+    }
   }
 }

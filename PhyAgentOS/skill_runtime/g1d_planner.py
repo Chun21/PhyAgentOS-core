@@ -377,6 +377,10 @@ class G1DPlanner:
         self._plans: dict[str, PosePlan] = {}
 
     @property
+    def minimum_duration_s(self) -> float:
+        return self._minimum_duration_s
+
+    @property
     def max_joint_velocity_rad_per_s(self) -> float:
         return self._max_joint_velocity_rad_per_s
 
