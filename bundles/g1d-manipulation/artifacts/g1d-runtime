@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Contract-only placeholder. Real SDK/DDS implementation is delivered in a later ticket.
+exec "${PAOS_G1D_RUNTIME_IMPL:-/bin/false}" "$@"

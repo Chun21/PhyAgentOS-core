@@ -1,0 +1,19 @@
+nodes:
+  - id: g1d-runtime
+    path: ${FORGE_RUNTIME_BIN}/g1d-runtime
+    inputs:
+      - gateway_request
+      - gateway_control
+    outputs:
+      - gateway_response
+      - gateway_event
+    env:
+      PAOS_SKILL_NAME: ${PAOS_SKILL_NAME}
+      PAOS_SKILL_VERSION: ${PAOS_SKILL_VERSION}
+gateway:
+  host: 127.0.0.1
+  port: 19082
+  agent:
+    enabled: false
+  tools:
+    enabled: true

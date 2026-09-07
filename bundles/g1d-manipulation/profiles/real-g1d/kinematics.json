@@ -1,0 +1,15 @@
+{
+  "profile": "g1d-real-v1",
+  "platform": "unitree-g1d",
+  "arm_dof": 7,
+  "left_slots": [15, 16, 17, 18, 19, 20, 21],
+  "right_slots": [22, 23, 24, 25, 26, 27, 28],
+  "preserved_slots": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+  "trajectory": {
+    "interpolation": "quintic",
+    "minimum_duration_s": 1.0,
+    "sample_hz": 500,
+    "writer_jitter_p99_ms": 0.5,
+    "watchdog_missed_cycles": 10
+  }
+}

@@ -1,0 +1,34 @@
+manifest_version: 2
+name: g1d-manipulation
+version: "0.1.0"
+description: Supervised visual-free dual-arm manipulation for Unitree G1_D.
+skill_document: SKILL.md
+gateway_url: http://127.0.0.1:19082
+required_tools:
+  - g1d.dual_arm.plan_pose
+  - g1d.dual_arm.execute_pose
+  - g1d.dual_arm.state
+  - g1d.dual_arm.stop
+profiles:
+  real-g1d:
+    dataflow: profiles/real-g1d/dataflow.yaml
+    required_binaries:
+      - g1d-runtime
+    required_assets:
+      - profiles/real-g1d/kinematics.json
+    required_environment: []
+    environment:
+      PAOS_G1D_PROFILE: real-g1d
+      PAOS_G1D_CONTROL_TOPIC: rt/lowcmd
+      PAOS_G1D_STATE_TOPIC: rt/lowstate
+artifacts:
+  resolver: local
+  nodes:
+    g1d-runtime:
+      artifact_id: g1d-runtime-0.1.0-linux-aarch64
+      version: "0.1.0"
+      platform: linux
+      arch: aarch64
+      artifact_type: executable_tar_gz
+      entrypoint: g1d-runtime
+      sha256: "47ac2598362356519364cb6fca49dba7e8be05e366917b785b6693b3e59675c9"
