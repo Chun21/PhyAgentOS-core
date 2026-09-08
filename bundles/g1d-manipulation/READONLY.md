@@ -9,6 +9,18 @@ These are pre-effect rejections; no operation is admitted to physical execution.
 ## Install on aarch64 Ubuntu 20.04
 
 Prerequisites: conda, the installed PAOS control plane, and Dora CLI 0.4.1.
+
+After installing the native CycloneDDS build, set these variables in the
+activated conda environment before launching the Runtime or Dora:
+
+```sh
+export CYCLONEDDS_HOME="$CONDA_PREFIX/g1d-dds"
+export LD_LIBRARY_PATH="$CYCLONEDDS_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+```
+
+The Python extension requires `libddsc.so.11` at runtime; `pip check` alone
+does not validate the dynamic loader path. `scripts/g1d_readonly.sh` applies
+these settings for a foreground diagnostic launch.
 The dependency lock targets CPython 3.12 and glibc 2.31. The Node is a
 hash-verified, self-extracting zipapp; it includes all Skill implementation,
 the unchanged upstream Forge Gateway/ToolEndpoint source, configuration,
