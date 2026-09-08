@@ -277,6 +277,43 @@
               }
             }
           }
+        },
+        "mode_machine": {
+          "type": "integer"
+        },
+        "left_arm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "joint_positions_rad"
+          ],
+          "properties": {
+            "joint_positions_rad": {
+              "type": "array",
+              "minItems": 7,
+              "maxItems": 7,
+              "items": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "right_arm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "joint_positions_rad"
+          ],
+          "properties": {
+            "joint_positions_rad": {
+              "type": "array",
+              "minItems": 7,
+              "maxItems": 7,
+              "items": {
+                "type": "number"
+              }
+            }
+          }
         }
       }
     }

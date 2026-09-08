@@ -274,6 +274,7 @@ def convert_hg_lowstate(state: Any, *, received_at: float) -> LowStateFrame:
         modes=tuple(int(motor.mode) for motor in state.motor_state),
         mode_pr=int(state.mode_pr),
         reserve=tuple(int(value) for value in state.reserve),
+        safety_ok=not any(motor.motorstate for motor in state.motor_state[15:29]),
     )
     return frame.with_crc()
 
@@ -510,13 +511,19 @@ class CycloneLowStateSource:
         monotonic: Any = time.monotonic,
         msg_type: type | None = None,
     ) -> None:
+        reader_options: dict[str, Any] = {}
         if cyclone is None:
             cyclone = _import_cyclone()
+            from cyclonedds.qos import Policy, Qos
+
+            # Observation needs the newest sample, not a growing 500 Hz backlog.
+            reader_options["qos"] = Qos(Policy.History.KeepLast(1))
         self._monotonic = monotonic
         participant = _dds(cyclone, "DomainParticipant")(domain_id)
         self._reader = _dds(cyclone, "DataReader")(
             _dds(cyclone, "Subscriber")(participant),
             _dds(cyclone, "Topic")(participant, topic, msg_type or _resolve_msg_type("LowState")),
+            **reader_options,
         )
 
     def read(self) -> tuple[LowStateFrame, float] | None:
@@ -524,12 +531,11 @@ class CycloneLowStateSource:
 
         latest: tuple[int, LowStateFrame, float] | None = None
         for sample in self._reader.take():
-            try:
-                frame = convert_hg_lowstate(sample, received_at=0.0)
-            except BridgeCRCError:
-                continue  # corrupt wire frame: never reaches the adapter
-            if latest is None or frame.tick > latest[0]:
-                latest = (frame.tick, frame, self._monotonic())
+            frame = convert_hg_lowstate(sample, received_at=0.0)
+            if latest is None or 0 < (frame.tick - latest[0]) % (2 ** 32) < 2 ** 31:
+                source_ns = getattr(getattr(sample, "sample_info", None), "source_timestamp", None)
+                age_s = max(0.0, (time.time_ns() - source_ns) / 1e9) if source_ns else 0.0
+                latest = (frame.tick, frame, self._monotonic() - age_s)
         if latest is None:
             return None
         return latest[1], latest[2]

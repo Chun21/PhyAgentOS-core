@@ -6,8 +6,8 @@ returns a short-lived plan identity.  The planner never publishes a command:
 it is the query half of the Forge Tool contract described in ``CONTEXT.md``.
 
 The kinematics seam is a protocol so tests run on deterministic recorded
-fixtures while the real deployment binds UniRobot's ``G1_D_DEX1_ArmIK``
-behind the same interface.  No SDK, DDS, or robot import is needed here.
+fixtures while the real deployment binds the internal PinKinematics
+implementation. No SDK, DDS, or robot import is needed here.
 """
 
 from __future__ import annotations
@@ -162,7 +162,7 @@ class CartesianPose:
 
 
 class Kinematics(Protocol):
-    """Reduced dual-arm kinematics seam (UniRobot G1_D_DEX1_ArmIK binds here)."""
+    """Reduced dual-arm kinematics boundary for the internal solver."""
 
     def solve_ik(self, left: ArmPose, right: ArmPose) -> JointSolution:
         """Solve the bilateral reduced IK; raise when unreachable."""
@@ -360,6 +360,9 @@ class G1DPlanner:
         runtime_instance_id: str,
         profile_digest: str,
         arm_joint_limit_rad: float = 2.8,
+        joint_limits_rad: Sequence[tuple[float, float]] | None = None,
+        base_frame: str | None = None,
+        require_current_state: bool = False,
         max_joint_velocity_rad_per_s: float = 0.5,
         max_joint_acceleration_rad_per_s2: float = 2.0,
         minimum_duration_s: float = 1.0,
@@ -376,6 +379,16 @@ class G1DPlanner:
         self._runtime_instance_id = runtime_instance_id
         self._profile_digest = profile_digest
         self._arm_joint_limit_rad = float(arm_joint_limit_rad)
+        self._joint_limits = tuple(joint_limits_rad) if joint_limits_rad is not None else (
+            (-self._arm_joint_limit_rad, self._arm_joint_limit_rad),
+        ) * 14
+        if len(self._joint_limits) != 14 or any(
+            not math.isfinite(lo) or not math.isfinite(hi) or lo >= hi
+            for lo, hi in self._joint_limits
+        ):
+            raise PlannerError("joint_limits_rad requires 14 finite ordered bounds")
+        self._base_frame = base_frame
+        self._require_current_state = require_current_state
         self._max_joint_velocity_rad_per_s = float(max_joint_velocity_rad_per_s)
         self._max_joint_acceleration_rad_per_s2 = float(max_joint_acceleration_rad_per_s2)
         self._minimum_duration_s = float(minimum_duration_s)
@@ -410,6 +423,16 @@ class G1DPlanner:
         right_pose = validate_arm_pose(right)
         if left_pose.frame_id != right_pose.frame_id:
             raise PoseValidationError("both arm targets must share one frame_id")
+        if self._base_frame is not None and left_pose.frame_id != self._base_frame:
+            raise PoseValidationError(f"frame_id must be {self._base_frame}")
+        if self._require_current_state and current_q is None:
+            raise PoseValidationError("valid current state is required")
+        if current_q is not None:
+            if len(current_q) != TOTAL_MOTOR_SLOTS or any(
+                not math.isfinite(value) for value in current_q
+            ):
+                raise PoseValidationError("current state requires 35 finite joint values")
+            self._validate_solution(JointSolution(tuple(current_q[15:22]), tuple(current_q[22:29])))
 
         checks: list[PlanCheck] = []
         checks.append(
@@ -427,14 +450,14 @@ class G1DPlanner:
             PlanCheck(
                 name="reachability",
                 passed=True,
-                detail="fixture kinematics solved the bilateral target",
+                detail="kinematics solved the bilateral target",
             )
         )
         checks.append(
             PlanCheck(
                 name="joint_limits",
                 passed=True,
-                detail=f"all arm joints within ±{self._arm_joint_limit_rad} rad",
+                detail="all arm joints within configured per-joint bounds (rad)",
             )
         )
 
@@ -547,12 +570,14 @@ class G1DPlanner:
     def _validate_solution(self, solution: JointSolution) -> None:
         if len(solution.left_q) != ARM_DOF or len(solution.right_q) != ARM_DOF:
             raise InvalidSolutionError(f"each arm solution needs {ARM_DOF} joint values")
-        for value in (*solution.left_q, *solution.right_q):
+        for value, (lower, upper) in zip(
+            (*solution.left_q, *solution.right_q), self._joint_limits, strict=True
+        ):
             if not math.isfinite(value):
                 raise InvalidSolutionError("IK solution must contain finite values")
-            if abs(value) > self._arm_joint_limit_rad:
+            if not lower <= value <= upper:
                 raise JointLimitError(
-                    f"IK joint value {value:.3f} exceeds ±{self._arm_joint_limit_rad} rad"
+                    f"joint value {value:.3f} exceeds bounds [{lower}, {upper}] rad"
                 )
 
     def _plan_trajectory(

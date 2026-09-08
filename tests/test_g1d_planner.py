@@ -291,7 +291,7 @@ class TestPlanner:
         frame = make_lowstate_frame(
             mode_machine=7,
             tick=42,
-            positions=[float(index) for index in range(35)],
+            positions=[float(index) for index in range(15)] + [0.0] * 20,
         )
         plan = planner.plan_pose(
             left=dict(HOME_LEFT), right=dict(HOME_RIGHT), current_q=frame.positions

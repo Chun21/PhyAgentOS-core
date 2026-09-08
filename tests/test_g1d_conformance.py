@@ -216,13 +216,9 @@ def test_conformance_protected_configuration_is_injected_not_baked() -> None:
     manifest = load_manifest(BUNDLE / "skill.yaml")
     profile = manifest.profiles["real-g1d"]
 
-    # Host/DDS/URDF/IK configuration is required from the protected
-    # environment; the RuntimeManager preflight refuses to start without it.
-    assert set(profile.required_environment) >= {
-        "PAOS_G1D_DDS_DOMAIN",
-        "PAOS_G1D_URDF_PATH",
-        "PAOS_G1D_IK_CONFIG",
-    }
+    # The DDS domain is host configuration. The verified model and IK profile
+    # now ship inside the standalone Node and need no external path override.
+    assert set(profile.required_environment) == {"PAOS_G1D_DDS_DOMAIN"}
     # Nothing baked into the profile environment carries host paths or
     # credentials; the Gateway binds loopback by the dataflow, not by config.
     for value in profile.environment.values():

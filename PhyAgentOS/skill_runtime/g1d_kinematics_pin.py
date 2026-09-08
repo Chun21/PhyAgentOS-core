@@ -65,7 +65,7 @@ class KinematicsInitError(KinematicsError):
     """The pinocchio model could not be built."""
 
 
-class URDFNotFound(KinematicsInitError):
+class URDFNotFound(KinematicsInitError):  # noqa: N818 - retained public exception name
     """The configured URDF file does not exist."""
 
 
@@ -254,6 +254,7 @@ class PinKinematics:
                 f"reference needs {self.nq} joint values, got {len(reference)}"
             )
         self._reference_q = reference
+        self._last_solution = None
 
     def solve_ik(self, left: ArmPose, right: ArmPose) -> JointSolution:
         import numpy as np  # local: only the solver itself needs linear algebra
@@ -261,9 +262,9 @@ class PinKinematics:
         pin = self._pin
         model, data = self.model, self._data
         if self._last_solution is not None:
-            q = list(self._last_solution)
+            q = np.asarray(self._last_solution, dtype=float)
         else:
-            q = list(self._reference_q)
+            q = np.asarray(self._reference_q, dtype=float)
 
         targets = {
             "L_ee": _target_se3(pin, left),
@@ -292,14 +293,15 @@ class PinKinematics:
                 )
                 for name in EE_FRAME_NAMES
             ]
-            J = np.vstack([np.asarray(j, dtype=float) for j in jacobians])
-            dq_task = J.T @ np.linalg.solve(J @ J.T + damping_eye, e)
-            dq_posture = self._posture_gain * (
+            jacobian = np.vstack([np.asarray(j, dtype=float) for j in jacobians])
+            inverse = jacobian.T @ np.linalg.solve(jacobian @ jacobian.T + damping_eye, np.eye(12))
+            dq_task = inverse @ e
+            dq_posture = self._posture_gain * (np.eye(self.nq) - inverse @ jacobian) @ (
                 np.asarray(self._reference_q, dtype=float) - np.asarray(q, dtype=float)
             )
             q = np.clip(
                 np.asarray(q, dtype=float) + dq_task + dq_posture, lower, upper
-            ).tolist()
+            )
 
         self.last_stats = {"iterations": iterations, "residual": residual}
         if residual >= self._tolerance:
@@ -309,9 +311,9 @@ class PinKinematics:
                 f"(residual {residual:.4f})"
             )
 
-        q = [float(value) for value in q]
-        self._last_solution = list(q)
-        left_q, right_q = q[:ARM_DOF], q[ARM_DOF:]
+        solution = [float(value) for value in q]
+        self._last_solution = solution
+        left_q, right_q = solution[:ARM_DOF], solution[ARM_DOF:]
         return JointSolution(left_q=tuple(left_q), right_q=tuple(right_q))
 
     def solve_fk(
@@ -325,7 +327,7 @@ class PinKinematics:
 
         pin = self._pin
         model, data = self.model, self._data
-        q = [*left_q, *right_q]
+        q = _numpy().asarray([*left_q, *right_q], dtype=float)
         pin.forwardKinematics(model, data, q)
         pin.updateFramePlacements(model, data)
 
@@ -334,7 +336,7 @@ class PinKinematics:
             placement = data.oMf[self._frame_ids[name]]
             poses.append(
                 CartesianPose(
-                    position_m=tuple(float(v) for v in placement.translation),
+                    position_m=(float(placement.translation[0]), float(placement.translation[1]), float(placement.translation[2])),
                     orientation_xyzw=matrix_to_quaternion(placement.rotation),
                 )
             )

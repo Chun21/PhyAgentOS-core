@@ -1,82 +1,41 @@
-# G1_D Manipulation Skill — Deployment Runbook, Operator Checklist, and Acceptance Ladder
+# G1_D deployment and physical acceptance
 
-This document is the delivery surface for supervised, visual-free operation of the
-`g1d-manipulation` Forge Skill on a Unitree G1_D (two 7-DoF arms, two Dex1-1 end
-effectors). It covers robot-host installation, runtime operation, the mandatory
-operator checklist, the robot-free conformance harness, and the staged physical
-acceptance ladder. Nothing here connects to a robot on its own: every automated
-step runs offline against fake DDS sources, fixture kinematics, and packaged
-archives.
+The current #17 Bundle delivers read-only startup, DDS state and internal
+Pinocchio planning through the real Forge Gateway. Physical execution remains
+unavailable. The execution and evidence components exercised by the older
+conformance harness below are not yet a deployed execution service.
 
-## 1. Robot-host installation (immutable Bundle/Node verification)
+## 1. Build and install the read-only release
 
-The deployment unit is the manifest-v2 Skill package
-(`bundles/g1d-manipulation`, packaged by `scripts/package_skill.py` into
-`g1d-manipulation-<version>.tar.gz`). Installation is explicit, hash-verified,
-and atomic:
+Use the `phyagent` conda environment on the build host:
 
 ```bash
-# On the development host: package and record the archive hash.
-python scripts/package_skill.py bundles/g1d-manipulation /tmp/dist
-sha256sum /tmp/dist/g1d-manipulation-0.1.0.tar.gz
+conda activate phyagent
+python scripts/package_g1d_release.py --dependency-cache /tmp/g1d-dependencies --output-dir dist/skills
+sha256sum dist/skills/g1d-manipulation-0.2.0.tar.gz
 ```
 
-```python
-from pathlib import Path
-from PhyAgentOS.skill_runtime.installer import SkillInstaller
-from PhyAgentOS.skill_runtime.state import RuntimeStateStore
+The release builder verifies upstream sources and target dependency artifacts,
+rebuilds the Node lock, and emits a self-verifying manifest-v2 archive. The
+Bundle includes the real implementation, URDF, profile, licenses, locked
+wheels, and fixed CycloneDDS sources. `scripts/package_skill.py` can still
+package the source Bundle without the dependency cache.
 
-installer = SkillInstaller(root=Path("/opt/paos/skills"),
-                           state_store=RuntimeStateStore(Path("/opt/paos/state")))
-manifest = installer.install(Path("/tmp/dist/g1d-manipulation-0.1.0.tar.gz"),
-                             expected_sha256="<recorded sha256>")
-```
+For exact robot-host installation and conda setup, follow
+[the shipped read-only workflow](../bundles/g1d-manipulation/READONLY.md).
 
-Rules enforced by the installer and the archive validator:
+## 2. Runtime operation and delivery status
 
-- The archive SHA-256 is verified before extraction; a tampered archive is
-  rejected and the previously installed version is left untouched.
-- Node artifacts are locked by `NodeLock` (id, version, platform, arch,
-  SHA-256); the `g1d-runtime` executable is only accepted from its locked
-  archive.
-- Re-installation of a changed version backs up the previous install under
-  `.backups/<skill>/<old-version>-<stamp>/`; a failed install restores it
-  (rollback). `installer.remove("g1d-manipulation")` uninstalls cleanly, and
-  refuses while the runtime is running.
-- No credentials are stored in the Bundle, manifest, logs, or evidence.
-  Host, DDS domain, URDF, and IK configuration are injected at start through
-  the protected `real-g1d` profile's `required_environment`
-  (`PAOS_G1D_DDS_DOMAIN`, `PAOS_G1D_URDF_PATH`, `PAOS_G1D_IK_CONFIG`) — the
-  RuntimeManager preflight refuses to start without them. The Gateway binding
-  is deliberately fixed to loopback by the dataflow so it can never be exposed
-  publicly; reaching it is an explicit SSH-tunnel/robot-LAN decision made
-  outside the Bundle.
+Follow the same workflow for managed `start`, `status`, and `stop`, or a
+foreground diagnostic launch. Discovery and Tool calls use the actual Forge
+Gateway. `runtime_ready` never implies `action_ready`; execute and stop return
+explicit pre-effect outcomes until the execution slice is delivered.
 
-## 2. Runtime operation (real-g1d start / status / stop)
-
-The managed Robot-side Skill Runtime runs on the G1_D host (aarch64, Ubuntu
-20.04, `eth0=192.168.123.164`). The development host reaches it over the robot
-LAN or an SSH tunnel through the governed Tool API; the Gateway
-(`127.0.0.1:19082` on the robot host) is never exposed publicly.
-
-- **Start**: `RuntimeManager.start("g1d-manipulation", "real-g1d")` — or
-  `MockSkillRuntime(BUNDLE).start("real-g1d")` for the offline rehearsal.
-  Preflight verifies profile assets (`kinematics.json`, `dataflow.yaml`) and
-  the locked `g1d-runtime` binary before launching the Dora flow.
-- **Status / context**: `status()` distinguishes `runtime_ready` (healthy
-  process group) from `action_ready` (safety gate, fresh CRC-valid state,
-  approved mode, requested Dex1 health). `gateway_tools()` /
-  `gateway_context(<tool_id>)` are the discovery surface; callers never guess
-  Tool IDs or schemas.
-- **Stop**: `stop()` is explicit and idempotent. Lifecycle is
-  Idle → Arming → Active → Stop → Release; MotionSwitcher mode is never
-  restored automatically, and an Action is never reconstructed or reposted
-  after a crash or network loss — reconcile by persisted invocation ID.
-
-Trusted Gateway access: only the explicit `real-g1d` profile exists in this
-Bundle; the Gateway binds loopback on the robot host, agent mode is disabled,
-tools mode enabled, and access crosses the boundary only via the robot LAN /
-SSH tunnel from the trusted development host.
+Automated acceptance includes a real installed Node, isolated loopback DDS,
+real Pinocchio, independent URDF geometry checks and zero command publications.
+Native aarch64 deployment and physical checks remain operator-confirmed gates.
+The checklist and physical ladder below apply to later supervised execution;
+they are not claims that this read-only release performs physical Actions.
 
 ## 3. Operator run checklist (mandatory, human-confirmed)
 

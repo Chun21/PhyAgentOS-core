@@ -77,7 +77,7 @@ def test_mock_runtime_rejects_unknown_profile_and_hides_context_when_stopped() -
 
 def test_bundle_packages_with_verified_archive_inventory(tmp_path: Path) -> None:
     archive = package(BUNDLE, tmp_path)
-    assert archive.name == "g1d-manipulation-0.1.0.tar.gz"
+    assert archive.name == "g1d-manipulation-0.2.0.tar.gz"
     extracted = tmp_path / "extracted"
     ArchiveValidator().extract(archive, extracted, expected_sha256=sha256_file(archive))
     assert (extracted / "skill.yaml").is_file()

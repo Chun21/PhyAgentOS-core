@@ -220,21 +220,25 @@ def test_cyclone_source_subscribes_and_converts_latest_frame() -> None:
     assert source.read()[0].tick == 8
 
 
-def test_cyclone_source_silently_skips_crc_invalid_wire_frames() -> None:
+def test_cyclone_source_reports_crc_invalid_wire_frames() -> None:
     cyclone = FakeCyclone()
     source = CycloneLowStateSource(cyclone=cyclone)
 
     broken = make_state()
     broken.motor_state[3].q += 1.0  # crc now stale
     cyclone.reader.samples.append(broken)
-    assert source.read() is None
+    with pytest.raises(BridgeCRCError):
+        source.read()
 
     good = make_state(tick=9)
     cyclone.reader.samples.append(good)
     assert source.read()[0].tick == 9
 
 
-def test_cyclone_source_missing_dependency_is_explicit() -> None:
+def test_cyclone_source_missing_dependency_is_explicit(monkeypatch) -> None:
+    import sys
+
+    monkeypatch.setitem(sys.modules, "cyclonedds", None)
     with pytest.raises(BridgeUnavailableError, match="cyclonedds"):
         CycloneLowStateSource(cyclone=None)
 

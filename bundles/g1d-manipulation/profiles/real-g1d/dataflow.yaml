@@ -2,18 +2,8 @@ nodes:
   - id: g1d-runtime
     path: ${FORGE_RUNTIME_BIN}/g1d-runtime
     inputs:
-      - gateway_request
-      - gateway_control
-    outputs:
-      - gateway_response
-      - gateway_event
+      lifecycle_tick: dora/timer/millis/100
     env:
-      PAOS_SKILL_NAME: ${PAOS_SKILL_NAME}
-      PAOS_SKILL_VERSION: ${PAOS_SKILL_VERSION}
-gateway:
-  host: 127.0.0.1
-  port: 19082
-  agent:
-    enabled: false
-  tools:
-    enabled: true
+      PAOS_SKILL_ROOT: ${PAOS_SKILL_ROOT}
+      PAOS_G1D_PROFILE: real-g1d
+      PAOS_G1D_DDS_DOMAIN: ${PAOS_G1D_DDS_DOMAIN}
