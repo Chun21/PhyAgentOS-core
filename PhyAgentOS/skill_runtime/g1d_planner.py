@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from PhyAgentOS.skill_runtime.g1d_trajectory import quintic_duration
+
 TOTAL_MOTOR_SLOTS = 35
 ARM_DOF = 7
 DEFAULT_PLAN_TTL_S = 5.0
@@ -320,6 +322,7 @@ class PlannedMotionSummary:
     sample_hz: int
     max_velocity: float
     max_acceleration: float
+    max_jerk: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -333,6 +336,8 @@ class PosePlan:
     joint_solution: JointSolution
     checks: tuple[PlanCheck, ...]
     trajectory: PlannedMotionSummary
+    targets: tuple[ArmPose, ArmPose] | None = None
+    start_q: tuple[float, ...] | None = None
     dex1_left_opening: float | None = None
     dex1_right_opening: float | None = None
 
@@ -365,6 +370,7 @@ class G1DPlanner:
         require_current_state: bool = False,
         max_joint_velocity_rad_per_s: float = 0.5,
         max_joint_acceleration_rad_per_s2: float = 2.0,
+        max_joint_jerk_rad_per_s3: float = 10.0,
         minimum_duration_s: float = 1.0,
         sample_hz: int = 500,
         position_tolerance_m: float = DEFAULT_POSITION_TOLERANCE_M,
@@ -379,9 +385,11 @@ class G1DPlanner:
         self._runtime_instance_id = runtime_instance_id
         self._profile_digest = profile_digest
         self._arm_joint_limit_rad = float(arm_joint_limit_rad)
-        self._joint_limits = tuple(joint_limits_rad) if joint_limits_rad is not None else (
-            (-self._arm_joint_limit_rad, self._arm_joint_limit_rad),
-        ) * 14
+        self._joint_limits = (
+            tuple(joint_limits_rad)
+            if joint_limits_rad is not None
+            else ((-self._arm_joint_limit_rad, self._arm_joint_limit_rad),) * 14
+        )
         if len(self._joint_limits) != 14 or any(
             not math.isfinite(lo) or not math.isfinite(hi) or lo >= hi
             for lo, hi in self._joint_limits
@@ -391,6 +399,17 @@ class G1DPlanner:
         self._require_current_state = require_current_state
         self._max_joint_velocity_rad_per_s = float(max_joint_velocity_rad_per_s)
         self._max_joint_acceleration_rad_per_s2 = float(max_joint_acceleration_rad_per_s2)
+        self.max_joint_jerk_rad_per_s3 = float(max_joint_jerk_rad_per_s3)
+        for value in (
+            max_joint_velocity_rad_per_s,
+            max_joint_acceleration_rad_per_s2,
+            max_joint_jerk_rad_per_s3,
+            minimum_duration_s,
+        ):
+            if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+                raise PlannerError("motion limits must be finite and positive")
+        if minimum_duration_s < 1 or sample_hz != 500:
+            raise PlannerError("trajectory requires at least one second and 500 Hz")
         self._minimum_duration_s = float(minimum_duration_s)
         self._sample_hz = int(sample_hz)
         self._plan_ttl_s = DEFAULT_PLAN_TTL_S
@@ -550,6 +569,8 @@ class G1DPlanner:
             joint_solution=solution,
             checks=tuple(checks),
             trajectory=trajectory,
+            targets=(left_pose, right_pose),
+            start_q=tuple(current_q[15:29]) if current_q is not None else None,
             dex1_left_opening=left_pose.dex1_opening,
             dex1_right_opening=right_pose.dex1_opening,
         )
@@ -580,6 +601,28 @@ class G1DPlanner:
                     f"joint value {value:.3f} exceeds bounds [{lower}, {upper}] rad"
                 )
 
+    @property
+    def joint_limits(self) -> tuple[tuple[float, float], ...]:
+        return self._joint_limits
+
+    def observe_pose(self, plan: PosePlan, arm_q: Sequence[float]) -> dict[str, Any]:
+        """Evaluate measured bilateral FK against the original Cartesian targets."""
+        self._validate_solution(JointSolution(tuple(arm_q[:7]), tuple(arm_q[7:])))
+        if plan.targets is None:
+            raise PlannerError("plan has no Cartesian acceptance targets")
+        actual = self._kinematics.solve_fk(arm_q[:7], arm_q[7:])
+        positions = [math.dist(a.position_m, b.position_m) for a, b in zip(actual, plan.targets)]
+        angles = [
+            quaternion_angle_deg(a.orientation_xyzw, b.orientation_xyzw)
+            for a, b in zip(actual, plan.targets)
+        ]
+        return {
+            "position_error_m": positions,
+            "orientation_error_deg": angles,
+            "within_tolerance": all(math.isfinite(v) and v <= 0.02 for v in positions)
+            and all(math.isfinite(v) and v <= 5 for v in angles),
+        }
+
     def _plan_trajectory(
         self,
         solution: JointSolution,
@@ -602,17 +645,14 @@ class G1DPlanner:
         )
         max_delta = max(deltas, default=0.0)
         # Quintic peak factors: v_peak = 15/8 * delta/T, a_peak = 10*sqrt(3)/3 * delta/T^2.
-        duration = self._minimum_duration_s
-        if max_delta > 0:
-            duration = max(
-                duration,
-                (15.0 / 8.0) * max_delta / self._max_joint_velocity_rad_per_s,
-                math.sqrt(
-                    (10.0 * math.sqrt(3.0) / 3.0)
-                    * max_delta
-                    / self._max_joint_acceleration_rad_per_s2
-                ),
-            )
+        duration = quintic_duration(
+            (*start_left, *start_right),
+            (*solution.left_q, *solution.right_q),
+            minimum_duration_s=self._minimum_duration_s,
+            max_velocity=self._max_joint_velocity_rad_per_s,
+            max_acceleration=self._max_joint_acceleration_rad_per_s2,
+            max_jerk=self.max_joint_jerk_rad_per_s3,
+        )
         max_velocity = (15.0 / 8.0) * max_delta / duration if duration > 0 else 0.0
         max_acceleration = (
             (10.0 * math.sqrt(3.0) / 3.0) * max_delta / (duration * duration)
@@ -624,6 +664,7 @@ class G1DPlanner:
             sample_hz=self._sample_hz,
             max_velocity=max_velocity,
             max_acceleration=max_acceleration,
+            max_jerk=60 * max_delta / duration**3,
         )
 
     def _evict_expired(self, now: float) -> None:

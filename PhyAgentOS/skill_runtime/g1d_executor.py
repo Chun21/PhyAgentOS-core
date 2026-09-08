@@ -11,34 +11,36 @@ robot-adapter seam: no SDK, DDS, or robot import is needed.
 from __future__ import annotations
 
 import enum
-import math
+import fcntl
+import hashlib
+import json
+import sqlite3
+import threading
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
+from functools import wraps
+from pathlib import Path
 from typing import Any
 
+from PhyAgentOS.skill_runtime.g1d_adapter import (
+    ARM_SLOTS,
+    AdapterError,
+    G1DAdapter,
+    LowCmdFrame,
+    StaleStateError,
+)
 from PhyAgentOS.skill_runtime.g1d_dex1 import (
     DEX1_SIDES,
     Dex1CommandSample,
     Dex1Error,
     Dex1Integration,
 )
-from PhyAgentOS.skill_runtime.g1d_adapter import (
-    AdapterError,
-    ARM_SLOTS,
-    G1DAdapter,
-    LowCmdFrame,
-    MotorCommand,
-    ModeLossError,
-    SafetyFaultError,
-    StaleStateError,
-    TOTAL_MOTOR_SLOTS,
-)
 from PhyAgentOS.skill_runtime.g1d_planner import (
     G1DPlanner,
-    PlanExpiredError,
     PosePlan,
 )
+from PhyAgentOS.skill_runtime.g1d_trajectory import StopTrajectory, plan_stop, quintic_duration
 
 
 class ExecutorError(RuntimeError):
@@ -136,27 +138,6 @@ def _quintic(s: float) -> float:
     return s * s * s * (10.0 + s * (-15.0 + 6.0 * s))
 
 
-def _quintic_duration_s(
-    start: Sequence[float],
-    target: Sequence[float],
-    *,
-    minimum_duration_s: float,
-    max_velocity: float,
-    max_acceleration: float,
-) -> float:
-    """Duration so the quintic profile respects velocity/acceleration caps."""
-
-    max_delta = max((abs(b - a) for a, b in zip(start, target, strict=True)), default=0.0)
-    duration = minimum_duration_s
-    if max_delta > 0:
-        duration = max(
-            duration,
-            (15.0 / 8.0) * max_delta / max_velocity,
-            math.sqrt((10.0 * math.sqrt(3.0) / 3.0) * max_delta / max_acceleration),
-        )
-    return duration
-
-
 @dataclass
 class Invocation:
     """Public record of one execute_pose Action invocation."""
@@ -177,6 +158,15 @@ class Invocation:
         return {"invocation_id": self.invocation_id, "attempt_id": self.attempt_id}
 
 
+def _serialized(method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def call(self: Any, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return call
+
+
 class G1DExecutor:
     """Admit, stream, and reconcile exactly one physical dual-arm Action."""
 
@@ -195,7 +185,10 @@ class G1DExecutor:
         stop_margin_s: float = DEFAULT_STOP_MARGIN_S,
         watchdog_missed_cycles: int = DEFAULT_WATCHDOG_MISSED_CYCLES,
         dex1: Dex1Integration | None = None,
+        journal_path: Path | None = None,
     ) -> None:
+        self._lock = threading.RLock()
+        self._closed = False
         self._adapter = adapter
         self._dex1 = dex1
         self._planner = planner
@@ -211,6 +204,37 @@ class G1DExecutor:
         self._invocations: dict[str, Invocation] = {}
         self._by_caller_plan: dict[tuple[str, str], str] = {}
         self._active: Invocation | None = None
+        self._journal_lock = None
+        if journal_path is not None:
+            self._journal_lock = journal_path.with_suffix(journal_path.suffix + ".lock").open("a")
+            try:
+                fcntl.flock(self._journal_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                self._journal_lock.close()
+                raise
+        self._journal = sqlite3.connect(
+            str(journal_path) if journal_path else ":memory:", check_same_thread=False
+        )
+        self._journal.execute("PRAGMA synchronous=FULL")
+        self._journal.execute(
+            "CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY, record TEXT NOT NULL)"
+        )
+        self._journal.execute(
+            "CREATE TABLE IF NOT EXISTS evidence (invocation TEXT, phase TEXT, record TEXT, PRIMARY KEY(invocation, phase))"
+        )
+        self._stream_evidence: list[dict[str, Any]] = []
+        self._pose_evidence: list[dict[str, Any]] = []
+        for (raw,) in self._journal.execute("SELECT record FROM actions").fetchall():
+            data = json.loads(raw)
+            data["status"] = ActionStatus(data["status"])
+            record = Invocation(**data)
+            if not record.status.is_terminal:
+                record.status = ActionStatus.UNKNOWN
+                record.stop_reason = "runtime_restart"
+                record.terminal_at = self._clock()
+            self._invocations[record.invocation_id] = record
+            self._by_caller_plan[(record.caller_id, record.plan_id)] = record.invocation_id
+            self._persist(record)
         # Streaming state for the active invocation.
         self._phase: _ControlPhase | None = None
         self._seq = 0
@@ -225,29 +249,39 @@ class G1DExecutor:
         self._target_q: tuple[float, ...] = (0.0,) * 14
         self._last_command: LowCmdFrame | None = None
         self._plan: PosePlan | None = None
+        self._stop_trajectory: StopTrajectory | None = None
+        self._stop_started_at = 0.0
+        self._accepted_since: float | None = None
+        self._observed_frame: int | None = None
+        self._observed_at: float | None = None
         self._requested_dex1: dict[str, float | None] = {"left": None, "right": None}
 
     # ------------------------------------------------------------------
     # execute_pose admission
     # ------------------------------------------------------------------
 
+    @_serialized
     def execute_pose(
         self,
         *,
         plan_id: str,
         caller_id: str,
         operation_deadline_s: float = DEFAULT_OPERATION_DEADLINE_S,
+        invocation_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> Invocation:
         """Admit one current plan as a physical Action (idempotent by caller+plan)."""
 
+        if self._closed:
+            raise ExecutorError("executor is closed")
         existing_id = self._by_caller_plan.get((caller_id, plan_id))
         if existing_id is not None:
             return self._invocations[existing_id]
 
+        if any(record.status is ActionStatus.UNKNOWN for record in self._invocations.values()):
+            raise ExecutorError("unresolved physical outcome requires operator recovery")
         if self._active is not None and not self._active.status.is_terminal:
-            raise ActiveActionError(
-                f"invocation {self._active.invocation_id!r} is still active"
-            )
+            raise ActiveActionError(f"invocation {self._active.invocation_id!r} is still active")
 
         if not MIN_OPERATION_DEADLINE_S <= operation_deadline_s <= MAX_OPERATION_DEADLINE_S:
             raise InvalidDeadlineError(
@@ -259,7 +293,14 @@ class G1DExecutor:
         self._require_binding(plan)
         self._plan = plan
         # Readiness gate: fresh CRC-valid state, approved mode, safety healthy.
-        self._adapter.require_ready()
+        state = self._adapter.require_ready()
+        current = tuple(m.q for m in (*state.left_arm, *state.right_arm))
+        if plan.start_q is None:
+            raise ExecutorError("execution requires validated planned start state")
+        if not plan.checks_passed or any(
+            abs(a - b) > 0.02 for a, b in zip(current, plan.start_q, strict=True)
+        ):
+            raise ExecutorError("plan checks failed or current state differs from planned start")
         # Optional external Dex1: only *requested* openings are gated; a
         # missing opening is non-blocking and the service may be absent.
         if plan.dex1_left_opening is not None or plan.dex1_right_opening is not None:
@@ -276,28 +317,101 @@ class G1DExecutor:
 
         now = self._clock()
         invocation = Invocation(
-            invocation_id=f"inv-{uuid.uuid4().hex}",
-            attempt_id=f"attempt-{uuid.uuid4().hex}",
+            invocation_id=invocation_id or f"inv-{uuid.uuid4().hex}",
+            attempt_id=attempt_id or f"attempt-{uuid.uuid4().hex}",
             plan_id=plan_id,
             caller_id=caller_id,
             status=ActionStatus.PENDING,
             created_at=now,
             deadline_at=now + float(operation_deadline_s),
         )
+        if invocation.invocation_id in self._invocations:
+            raise ExecutorError("invocation identity is already bound to another operation")
+        with self._journal:
+            self._write_evidence(
+                invocation, "before", {"state": asdict(state), "plan": asdict(plan)}
+            )
+            self._persist(invocation)  # Commit admission and before evidence before any effect.
+        self._stream_evidence = []
+        self._pose_evidence = []
         self._invocations[invocation.invocation_id] = invocation
         self._requested_dex1 = {
             "left": plan.dex1_left_opening,
             "right": plan.dex1_right_opening,
         }
         self._seq = 0
+        self._next_emit_t = None
+        self._last_emit_t = None
+        self._last_command = None
+        self._phase = None
+        self._accepted_since = None
+        self._observed_frame = None
+        self._observed_at = None
         self._by_caller_plan[(caller_id, plan_id)] = invocation.invocation_id
         self._active = invocation
         self._adapter.set_active_operation(invocation.invocation_id)
         return invocation
 
+    def _persist(self, invocation: Invocation) -> None:
+        data = asdict(invocation)
+        data["status"] = invocation.status.value
+        with self._journal:
+            self._journal.execute(
+                "INSERT OR REPLACE INTO actions VALUES (?, ?)",
+                (invocation.invocation_id, json.dumps(data, allow_nan=False)),
+            )
+
+    def _write_evidence(self, invocation: Invocation, phase: str, payload: dict[str, Any]) -> None:
+        record = {
+            "phase": phase,
+            "invocation_id": invocation.invocation_id,
+            "attempt_id": invocation.attempt_id,
+            "plan_id": invocation.plan_id,
+            "runtime_instance_id": self._runtime_instance_id,
+            "skill_version": self._skill_version,
+            "profile_digest": self._profile_digest,
+            "monotonic_at": self._clock(),
+            "payload": payload,
+        }
+        raw = json.dumps(record, sort_keys=True, allow_nan=False)
+        record["sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+        self._journal.execute(
+            "INSERT OR REPLACE INTO evidence VALUES (?, ?, ?)",
+            (invocation.invocation_id, phase, json.dumps(record, allow_nan=False)),
+        )
+
+    @_serialized
+    def evidence(self, invocation_id: str) -> list[dict[str, Any]]:
+        self.get_invocation(invocation_id)
+        records = {
+            phase: json.loads(raw)
+            for phase, raw in self._journal.execute(
+                "SELECT phase, record FROM evidence WHERE invocation=?", (invocation_id,)
+            )
+        }
+        return [records[phase] for phase in ("before", "during", "after") if phase in records]
+
+    @_serialized
+    def close(self) -> None:
+        if self._closed:
+            return
+        if self._active is not None and not self._active.status.is_terminal:
+            self.mark_unknown(self._active.invocation_id, reason="runtime_shutdown")
+        self._journal.close()
+        if self._journal_lock is not None:
+            self._journal_lock.close()
+        self._closed = True
+
     def _require_current_plan(self, plan_id: str) -> PosePlan:
         # Raises PlanExpiredError for unknown or expired plans.
         return self._planner.get_plan(plan_id)
+
+    @_serialized
+    def while_idle(self, operation: Callable[[], Any]) -> Any:
+        """Serialize shared-model planning against Action admission."""
+        if self._active is not None and not self._active.status.is_terminal:
+            raise ExecutorError("planning requires an idle executor")
+        return operation()
 
     def _require_binding(self, plan: PosePlan) -> None:
         binding = plan.binding
@@ -315,6 +429,7 @@ class G1DExecutor:
                 "plan binding does not match the active Skill/Runtime: " + "; ".join(mismatches)
             )
 
+    @_serialized
     def get_invocation(self, invocation_id: str) -> Invocation:
         try:
             return self._invocations[invocation_id]
@@ -325,16 +440,27 @@ class G1DExecutor:
     # stop Action
     # ------------------------------------------------------------------
 
+    @_serialized
     def stop(self, *, invocation_id: str | None = None) -> str:
         """Idempotently request a controlled stop; targets the active invocation."""
 
-        if invocation_id is not None and invocation_id not in self._invocations:
-            return "unknown"
+        if invocation_id is not None:
+            record = self._invocations.get(invocation_id)
+            if record is None or record.status is ActionStatus.UNKNOWN:
+                return "unknown"
         active = self._active
+        if invocation_id is None and any(
+            record.status is ActionStatus.UNKNOWN for record in self._invocations.values()
+        ):
+            return "unknown"
+        if active is not None and active.status is ActionStatus.UNKNOWN:
+            return "unknown"
         if active is None or active.status.is_terminal:
             return "already_stopped"
         if invocation_id is not None and invocation_id != active.invocation_id:
             return "already_stopped"
+        if active.status is ActionStatus.STOPPING:
+            return "accepted"
         self._request_stop(active)
         return "accepted"
 
@@ -342,12 +468,15 @@ class G1DExecutor:
     # lifecycle observation and reconciliation
     # ------------------------------------------------------------------
 
+    @_serialized
     def get_active_status(self) -> ActionStatus | None:
         return self._active.status if self._active is not None else None
 
+    @_serialized
     def active_invocation(self) -> Invocation | None:
         return self._active
 
+    @_serialized
     def query_state(self) -> dict[str, Any]:
         """g1d.dual_arm.state output: runtime readiness, action readiness, Dex1."""
 
@@ -365,8 +494,13 @@ class G1DExecutor:
             gate_ready = True
         except AdapterError:
             gate_ready = False
-        action_ready = gate_ready and not (
-            self._active is not None and not self._active.status.is_terminal
+        action_ready = (
+            gate_ready
+            and not self._closed
+            and not any(
+                record.status is ActionStatus.UNKNOWN for record in self._invocations.values()
+            )
+            and not (self._active is not None and not self._active.status.is_terminal)
         )
         dex1: dict[str, dict[str, Any]] = {}
         for side in DEX1_SIDES:
@@ -387,6 +521,7 @@ class G1DExecutor:
             "dex1": dex1,
         }
 
+    @_serialized
     def mark_unknown(self, invocation_id: str, *, reason: str) -> None:
         """Record an unresolved physical outcome (transport loss, crash)."""
 
@@ -395,12 +530,13 @@ class G1DExecutor:
             raise ExecutorError(
                 f"invocation {invocation_id!r} is already {invocation.status.value}"
             )
-        self._terminate(invocation, ActionStatus.UNKNOWN, reason=reason)
+        self._finish(invocation, ActionStatus.UNKNOWN, reason=reason)
 
     # ------------------------------------------------------------------
     # 500 Hz writer loop
     # ------------------------------------------------------------------
 
+    @_serialized
     def tick(self) -> None:
         """Advance the writer by one control cycle (called at ~2 ms cadence)."""
 
@@ -420,13 +556,8 @@ class G1DExecutor:
             # Writer watchdog: stale state stops admission/execution.
             self._watchdog_stop(invocation, now, reason="stale_state")
             return
-        except (ModeLossError, SafetyFaultError) as error:
-            # Urgent safety faults take the conservative stop path: stop
-            # streaming immediately, no smooth deceleration wait.
-            # Best-effort conservative stop command before giving up the wire.
-            if self._last_command is not None:
-                self._emit(now, self._last_command, phase=StreamPhase.HOLD)
-            self._finish(invocation, ActionStatus.FAILED, reason=type(error).__name__)
+        except AdapterError as error:
+            self._finish(invocation, ActionStatus.UNKNOWN, reason=type(error).__name__)
             return
 
         # Requested Dex1 streams must stay healthy for the whole Action.
@@ -452,7 +583,12 @@ class G1DExecutor:
             return
 
         # Operation deadline: stop handling inside the reserved margin.
-        if now >= invocation.deadline_at:
+        if now >= invocation.deadline_at - 2.0 - self._stop_margin_s - 0.1:
+            if self._seq == 0:
+                self._finish(
+                    invocation, ActionStatus.DEADLINE_EXCEEDED, reason="deadline_before_effect"
+                )
+                return
             self._begin_stop(invocation, now, reason="deadline")
             return
 
@@ -469,9 +605,11 @@ class G1DExecutor:
             self._hold_until = now + self._hold_cycles * self._control_period_s
             self._phase = _ControlPhase.HOLD
             self._arm_motion(invocation)
+            if invocation.status.is_terminal:
+                return
 
-        while self._next_emit_t is not None and now >= self._next_emit_t:
-            emit_t = self._next_emit_t
+        if self._last_emit_t is None or now > self._last_emit_t:
+            emit_t = now
             if self._phase is _ControlPhase.HOLD:
                 hold_until = self._hold_until
                 assert hold_until is not None
@@ -494,11 +632,56 @@ class G1DExecutor:
                 post_hold_until = self._post_hold_until
                 assert post_hold_until is not None
                 self._emit(emit_t, self._motion_frame(emit_t), phase=StreamPhase.HOLD)
-                if emit_t >= post_hold_until:
+                if self._observed_acceptance(emit_t):
                     self._finish(invocation, ActionStatus.SUCCEEDED, reason=None)
                     return
             self._emit_dex1(emit_t)
             self._next_emit_t = emit_t + self._control_period_s
+
+    def _observed_acceptance(self, now: float) -> bool:
+        state = self._adapter.require_ready()
+        if self._observed_at is not None and now - self._observed_at > 0.1:
+            self._accepted_since = None
+        if state.frame == self._observed_frame:
+            return False
+        self._observed_frame = state.frame
+        self._observed_at = now
+        q = [m.q for m in (*state.left_arm, *state.right_arm)]
+        assert self._plan is not None
+        try:
+            observation = self._planner.observe_pose(self._plan, q)
+            observation["state_age_ms"] = state.state_age_ms
+            observation["safety_gate"] = "ready"
+            observation["dex1"] = {}
+            self._pose_evidence.append(
+                {"monotonic_at": now, "state_frame": state.frame, **observation}
+            )
+            within = observation["within_tolerance"]
+        except (ValueError, RuntimeError):
+            within = False
+        if self._dex1 is not None:
+            for side, target in self._requested_dex1.items():
+                if target is not None:
+                    observed = self._dex1.readiness(side)
+                    if self._pose_evidence:
+                        self._pose_evidence[-1]["dex1"][side] = {
+                            "target": target,
+                            "opening": observed.opening,
+                            "healthy": observed.ok,
+                            "age_ms": observed.age_ms,
+                        }
+                    within = (
+                        within
+                        and observed.ok
+                        and observed.opening is not None
+                        and abs(observed.opening - target) <= 0.05
+                    )
+        if not within:
+            self._accepted_since = None
+            return False
+        if self._accepted_since is None:
+            self._accepted_since = now
+        return now - self._accepted_since >= 2.0
 
     def _emit_dex1(self, t: float) -> None:
         """Stream requested opening commands to the external Dex1 topics."""
@@ -508,36 +691,49 @@ class G1DExecutor:
         for side, opening in self._requested_dex1.items():
             if opening is None:
                 continue
-            self._sink.write(
-                Dex1CommandSample(t_s=t, command=self._dex1.command(side, opening))
-            )
+            self._write_command(Dex1CommandSample(t_s=t, command=self._dex1.command(side, opening)))
 
     def _arm_motion(self, invocation: Invocation) -> None:
         plan = self._plan
+        assert plan is not None
         state = self._adapter.query_state()
         current = [snapshot.q for snapshot in (*state.left_arm, *state.right_arm)]
+        if plan.start_q is None or any(
+            abs(a - b) > 0.02 for a, b in zip(current, plan.start_q, strict=True)
+        ):
+            self._finish(
+                invocation, ActionStatus.FAILED, reason="start_state_changed_before_effect"
+            )
+            return
         target = [*plan.joint_solution.left_q, *plan.joint_solution.right_q]
         self._start_q = tuple(current)
         self._target_q = tuple(target)
-        self._motion_duration_s = _quintic_duration_s(
+        self._motion_duration_s = quintic_duration(
             current,
             target,
             minimum_duration_s=self._planner.minimum_duration_s,
             max_velocity=self._planner.max_joint_velocity_rad_per_s,
             max_acceleration=self._planner.max_joint_acceleration_rad_per_s2,
+            max_jerk=self._planner.max_joint_jerk_rad_per_s3,
         )
 
     def _motion_frame(self, t: float) -> LowCmdFrame:
         assert self._motion_start is not None and self._motion_duration_s is not None
-        s = (t - self._motion_start) / self._motion_duration_s
+        s = min(1.0, max(0.0, (t - self._motion_start) / self._motion_duration_s))
         blend = _quintic(s)
         q = tuple(
             start + (target - start) * blend
             for start, target in zip(self._start_q, self._target_q, strict=True)
         )
-        return self._overlay_arm_q(q)
+        dq = tuple(
+            (b - a) * 30 * s * s * (1 - s) * (1 - s) / self._motion_duration_s
+            for a, b in zip(self._start_q, self._target_q, strict=True)
+        )
+        return self._overlay_arm_q(q, dq)
 
-    def _overlay_arm_q(self, arm_q: Sequence[float]) -> LowCmdFrame:
+    def _overlay_arm_q(
+        self, arm_q: Sequence[float], arm_dq: Sequence[float] | None = None
+    ) -> LowCmdFrame:
         """Rebuild the last complete frame with new arm-slot commands (15-28)."""
 
         template = self._last_command
@@ -545,7 +741,11 @@ class G1DExecutor:
             template = self._adapter.hold_frame()
         commands = list(template.motor_cmd)
         for index, value in enumerate(arm_q):
-            commands[ARM_SLOTS[index]] = replace(commands[ARM_SLOTS[index]], q=float(value))
+            commands[ARM_SLOTS[index]] = replace(
+                commands[ARM_SLOTS[index]],
+                q=float(value),
+                dq=float(arm_dq[index]) if arm_dq is not None else 0.0,
+            )
         return LowCmdFrame(
             mode_machine=template.mode_machine,
             motor_cmd=tuple(commands),
@@ -553,12 +753,23 @@ class G1DExecutor:
             reserve=template.reserve,
         ).with_crc()
 
+    def _write_command(self, sample: Any) -> None:
+        try:
+            self._sink.write(sample)
+        except Exception:
+            if self._active is not None:
+                self._finish(self._active, ActionStatus.UNKNOWN, reason="command_write_error")
+            raise
+
     def _emit(self, t: float, frame: LowCmdFrame, *, phase: StreamPhase) -> None:
         seq = self._seq
         self._seq = seq + 1
         self._last_emit_t = t
         self._last_command = frame
-        self._sink.write(StreamSample(seq=seq, t_s=t, frame=frame, phase=phase))
+        self._write_command(StreamSample(seq=seq, t_s=t, frame=frame, phase=phase))
+        self._stream_evidence.append(
+            {"seq": seq, "monotonic_at": t, "phase": phase.value, "frame": asdict(frame)}
+        )
         if self._active is not None:
             self._active.frames_emitted = self._seq
 
@@ -583,57 +794,129 @@ class G1DExecutor:
     def _begin_stop(self, invocation: Invocation, now: float, *, reason: str) -> None:
         """Enter stopping: bounded hold within the stop margin, then terminal."""
 
+        assert self._last_command is not None
+        q = [self._last_command.motor_cmd[i].q for i in ARM_SLOTS]
+        dq = [self._last_command.motor_cmd[i].dq for i in ARM_SLOTS]
+        ddq = [0.0] * 14
+        if (
+            self._phase is _ControlPhase.MOTION
+            and self._motion_start is not None
+            and self._motion_duration_s is not None
+        ):
+            u = min(
+                1.0,
+                max(
+                    0.0, ((self._last_emit_t or now) - self._motion_start) / self._motion_duration_s
+                ),
+            )
+            ddq = [
+                (b - a) * 60 * u * (1 - u) * (1 - 2 * u) / self._motion_duration_s**2
+                for a, b in zip(self._start_q, self._target_q, strict=True)
+            ]
+        try:
+            self._stop_trajectory = plan_stop(
+                q,
+                dq,
+                ddq,
+                limits=self._planner.joint_limits,
+                velocity=self._planner.max_joint_velocity_rad_per_s,
+                acceleration=self._planner.max_joint_acceleration_rad_per_s2,
+                jerk=self._planner.max_joint_jerk_rad_per_s3,
+                budget_s=2.0,
+            )
+        except ValueError:
+            self._finish(invocation, ActionStatus.UNKNOWN, reason="bounded_stop_unavailable")
+            return
+        self._stop_started_at = now
         invocation.status = ActionStatus.STOPPING
         invocation.stop_reason = reason
         base = self._last_emit_t if self._last_emit_t is not None else now
-        self._stop_hold_until = max(base, now) + self._stop_margin_s
+        self._stop_hold_until = (
+            max(base, now) + self._stop_trajectory.duration_s + self._stop_margin_s + 0.1
+        )
+        self._accepted_since = None
+        self._observed_at = None
+        self._observed_frame = None
         self._phase = _ControlPhase.STOP_HOLD
 
     def _tick_stop_hold(self, invocation: Invocation, now: float) -> None:
-        # Hold at the last commanded state; the freshness gate is not
-        # re-evaluated while stopping (a stale stream must not block the stop).
-        # If the stop path itself overruns its margin plus the watchdog window,
-        # reconcile to the terminal outcome instead of stopping forever.
-        overrun_after = (self._stop_hold_until or now) + (
-            self._watchdog_missed_cycles * self._control_period_s
-        )
-        if now > overrun_after:
-            terminal = {
-                "operator_stop": ActionStatus.STOPPED,
-                "deadline": ActionStatus.DEADLINE_EXCEEDED,
-            }.get(invocation.stop_reason or "", ActionStatus.STOPPED)
-            self._finish(invocation, terminal, reason=invocation.stop_reason)
+        try:
+            state = self._adapter.require_ready()
+            if self._dex1 is not None:
+                self._dex1.require_ready_for(self._requested_dex1)
+        except (AdapterError, Dex1Error) as error:
+            self._finish(invocation, ActionStatus.UNKNOWN, reason=type(error).__name__)
             return
-        while self._next_emit_t is not None and now >= self._next_emit_t:
-            emit_t = self._next_emit_t
-            assert self._last_command is not None
-            self._emit(emit_t, self._last_command, phase=StreamPhase.HOLD)
-            self._next_emit_t = emit_t + self._control_period_s
-            if emit_t >= (self._stop_hold_until or 0.0):
-                terminal = {
-                    "operator_stop": ActionStatus.STOPPED,
-                    "deadline": ActionStatus.DEADLINE_EXCEEDED,
-                }.get(invocation.stop_reason or "", ActionStatus.STOPPED)
+        if (
+            self._last_emit_t is not None
+            and now - self._last_emit_t > self._watchdog_missed_cycles * self._control_period_s
+        ):
+            self._finish(invocation, ActionStatus.UNKNOWN, reason="stop_writer_gap")
+            return
+        assert self._last_command is not None
+        if self._last_emit_t is None or now > self._last_emit_t:
+            assert self._stop_trajectory is not None
+            q, dq = self._stop_trajectory.sample(now - self._stop_started_at)
+            self._emit(now, self._overlay_arm_q(q, dq), phase=StreamPhase.HOLD)
+            self._next_emit_t = now + self._control_period_s
+        assert self._stop_trajectory is not None
+        settled = now - self._stop_started_at >= self._stop_trajectory.duration_s
+        within = settled and all(
+            abs(m.q - self._last_command.motor_cmd[m.slot].q) <= 0.01
+            for m in (*state.left_arm, *state.right_arm)
+        )
+        if self._observed_at is not None and now - self._observed_at > 0.1:
+            self._accepted_since = None
+        if state.frame != self._observed_frame:
+            self._observed_frame = state.frame
+            self._observed_at = now
+            if not within:
+                self._accepted_since = None
+            elif self._accepted_since is None:
+                self._accepted_since = now
+            elif now - self._accepted_since >= self._stop_margin_s:
+                terminal = (
+                    ActionStatus.DEADLINE_EXCEEDED
+                    if invocation.stop_reason == "deadline"
+                    else ActionStatus.STOPPED
+                )
                 self._finish(invocation, terminal, reason=invocation.stop_reason)
                 return
+        if now >= (self._stop_hold_until or now):
+            self._finish(invocation, ActionStatus.UNKNOWN, reason="hold_unconfirmed")
 
     def _watchdog_stop(self, invocation: Invocation, now: float, *, reason: str) -> None:
-        """Declared watchdog stop path: stop streaming and account immediately.
+        """Unhealthy feedback/cadence cannot establish a physical stop."""
+        self._finish(invocation, ActionStatus.UNKNOWN, reason=reason)
 
-        The writer loop is already unhealthy (missed cycles or stale state),
-        so there is no reliable cadence left for a smooth stop-margin hold;
-        one best-effort hold command is emitted and the invocation terminates
-        as stopped so reconciliation can proceed.
-        """
-
-        if self._last_command is not None:
-            self._emit(now, self._last_command, phase=StreamPhase.HOLD)
-        self._finish(invocation, ActionStatus.STOPPED, reason=reason)
-
-    def _terminate(self, invocation: Invocation, status: ActionStatus, *, reason: str | None) -> None:
-        invocation.status = status
-        invocation.stop_reason = reason
-        invocation.terminal_at = self._clock()
+    def _terminate(
+        self, invocation: Invocation, status: ActionStatus, *, reason: str | None
+    ) -> None:
+        candidate = replace(
+            invocation, status=status, stop_reason=reason, terminal_at=self._clock()
+        )
+        try:
+            with self._journal:
+                self._write_evidence(
+                    candidate,
+                    "during",
+                    {"frames": self._stream_evidence, "observations": self._pose_evidence},
+                )
+                self._write_evidence(
+                    candidate,
+                    "after",
+                    {"status": status.value, "reason": reason, "state": self.query_state()},
+                )
+                self._persist(candidate)
+        except Exception:
+            invocation.status = ActionStatus.UNKNOWN
+            invocation.stop_reason = "terminal_evidence_unavailable"
+            invocation.terminal_at = self._clock()
+            self._adapter.set_active_operation(None)
+            raise
+        invocation.status = candidate.status
+        invocation.stop_reason = candidate.stop_reason
+        invocation.terminal_at = candidate.terminal_at
 
 
 class RecordingSink:

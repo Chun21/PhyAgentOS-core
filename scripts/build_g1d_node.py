@@ -53,6 +53,14 @@ def build(gateway_archive: Path | None = None) -> Path:
     for name in (
         "g1d_adapter",
         "g1d_planner",
+        "g1d_trajectory",
+        "g1d_executor",
+        "g1d_dex1",
+        "g1d_dex1_bridge",
+        "g1d_control_loop",
+        "g1d_action_endpoint",
+        "g1d_authority",
+        "g1d_execution_runtime",
         "g1d_bridge",
         "g1d_kinematics_pin",
         "g1d_runtime",
@@ -70,7 +78,7 @@ def build(gateway_archive: Path | None = None) -> Path:
             parts = Path(member.name).parts[1:]
             if not member.isfile():
                 continue
-            # Preserve upstream sources and notices unmodified, without image/UI assets.
+            # Preserve upstream sources/notices except the documented deadline patch.
             if (
                 len(parts) >= 3
                 and parts[0] == "src"
@@ -84,7 +92,36 @@ def build(gateway_archive: Path | None = None) -> Path:
                 continue
             source = archive.extractfile(member)
             assert source is not None
-            files[target] = source.read()
+            data = source.read()
+            if target == "forge_gateway/services/tool_gateway_service.py":
+                # Narrow, version-pinned downstream fix: handshake timeout is not
+                # the physical operation deadline. See patches/README.md.
+                text = data.decode()
+                anchor = "        deadline_ms = (\n            None\n"
+                if text.count(anchor) != 1:
+                    raise ValueError("Gateway deadline patch anchor mismatch")
+                text = text.replace(
+                    anchor,
+                    """        operation_timeout = effective_timeout
+        if spec.tool_id == "g1d.dual_arm.execute_pose":
+            seconds = arguments.get("operation_deadline_s", 30.0)
+            if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 1 <= seconds <= 120:
+                raise ValueError("operation_deadline_s must be within [1, 120]")
+            operation_timeout = int(seconds * 1000)
+"""
+                    + anchor,
+                )
+                expression = "int(time.time() * 1_000) + effective_timeout,"
+                offset = text.index(anchor)
+                if expression not in text[offset:]:
+                    raise ValueError("Gateway deadline patch expression mismatch")
+                data = (
+                    text[:offset]
+                    + text[offset:].replace(
+                        expression, "int(time.time() * 1_000) + operation_timeout,", 1
+                    )
+                ).encode()
+            files[target] = data
     files["licenses/forge-gateway/source.json"] = json.dumps(
         {"commit": GATEWAY_COMMIT, "sha256": GATEWAY_SHA256, "url": GATEWAY_URL}
     ).encode()
@@ -98,7 +135,7 @@ def build(gateway_archive: Path | None = None) -> Path:
     executable = buffer.getvalue()
     (BUNDLE / "artifacts/g1d-runtime").write_bytes(executable)
     (BUNDLE / "artifacts/g1d-runtime").chmod(0o755)
-    archive_path = BUNDLE / "artifacts/g1d-runtime-0.2.0.tar.gz"
+    archive_path = BUNDLE / "artifacts/g1d-runtime-0.3.0.tar.gz"
     with archive_path.open("wb") as output:
         with gzip.GzipFile(fileobj=output, mode="wb", filename="", mtime=0) as zipped:
             with tarfile.open(fileobj=zipped, mode="w") as archive:

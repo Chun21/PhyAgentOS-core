@@ -17,6 +17,7 @@
   ],
   "max_joint_velocity_rad_per_s": 0.5,
   "max_joint_acceleration_rad_per_s2": 2.0,
+  "max_joint_jerk_rad_per_s3": 10.0,
   "plan_ttl_s": 5.0,
   "position_tolerance_m": 0.02,
   "orientation_tolerance_deg": 5.0,

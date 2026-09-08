@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from PhyAgentOS.skill_runtime.g1d_adapter import (
-    G1DAdapter,
-    StateUnavailableError,
-    StaleStateError,
     TOTAL_MOTOR_SLOTS,
+    G1DAdapter,
+    StaleStateError,
+    StateUnavailableError,
     make_lowstate_frame,
 )
 from PhyAgentOS.skill_runtime.g1d_executor import (
@@ -20,8 +22,6 @@ from PhyAgentOS.skill_runtime.g1d_planner import (
     digest_json,
     load_kinematics_profile,
 )
-
-from pathlib import Path
 
 BUNDLE = Path(__file__).parents[1] / "bundles" / "g1d-manipulation"
 KINEMATICS = BUNDLE / "profiles" / "real-g1d" / "kinematics.json"
@@ -58,9 +58,7 @@ class Harness:
 
     def __init__(self, *, runtime_instance_id: str = "runtime-test") -> None:
         self.clock = Clock()
-        self.adapter = G1DAdapter(
-            clock=self.clock, max_state_age_s=0.1, approved_mode_machine=7
-        )
+        self.adapter = G1DAdapter(clock=self.clock, max_state_age_s=0.1, approved_mode_machine=7)
         profile = load_kinematics_profile(KINEMATICS)
         self.planner = G1DPlanner(
             kinematics=FixtureKinematics(
@@ -71,14 +69,16 @@ class Harness:
             runtime_instance_id=runtime_instance_id,
             profile_digest=digest_json(profile),
         )
+        self.state_tick = 0
         self.executor = None  # set by make_executor once implemented
 
     def publish_state(
         self, *, positions: list[float] | None = None, mode_machine: int = 7, safety_ok: bool = True
     ) -> None:
+        self.state_tick += 1
         frame = make_lowstate_frame(
             mode_machine=mode_machine,
-            tick=42,
+            tick=self.state_tick,
             positions=positions if positions is not None else ARM_START,
             mode=[1] * 35,
             safety_ok=safety_ok,
@@ -86,7 +86,7 @@ class Harness:
         self.adapter.ingest(frame, received_at=self.clock())
 
     def make_plan(self):
-        return self.planner.plan_pose(left=HOME_LEFT, right=HOME_RIGHT)
+        return self.planner.plan_pose(left=HOME_LEFT, right=HOME_RIGHT, current_q=ARM_START)
 
 
 def make_executor(harness: Harness, **binding_overrides):
@@ -212,7 +212,12 @@ def run_to_completion(harness: Harness, *, publish_every_tick: bool = True) -> N
         if executor.get_active_status().is_terminal:
             return
         if publish_every_tick:
-            harness.publish_state()
+            positions = (
+                [m.q for m in harness.sink.samples[-1].frame.motor_cmd]
+                if harness.sink.samples
+                else ARM_START
+            )
+            harness.publish_state(positions=positions)
         harness.clock.advance(0.002)
         executor.tick()
     raise AssertionError("invocation never reached a terminal status")
@@ -230,7 +235,9 @@ def test_hold_precedes_minimum_one_second_synchronized_quintic_motion() -> None:
     samples = harness.sink.samples
     # Initial hold frames replay the current state before any motion.
     assert samples[0].phase.value == "hold"
-    hold_positions = [sample.frame.motor_cmd[15].q for sample in samples if sample.phase.value == "hold"]
+    hold_positions = [
+        sample.frame.motor_cmd[15].q for sample in samples if sample.phase.value == "hold"
+    ]
     assert hold_positions[0] == ARM_START[15]
 
     motion = [sample for sample in samples if sample.phase.value == "motion"]
@@ -253,7 +260,9 @@ def test_hold_precedes_minimum_one_second_synchronized_quintic_motion() -> None:
     # first and last motion samples barely move.
     first_step = abs(motion[1].frame.motor_cmd[15].q - motion[0].frame.motor_cmd[15].q)
     mid_index = len(motion) // 2
-    mid_step = abs(motion[mid_index + 1].frame.motor_cmd[15].q - motion[mid_index].frame.motor_cmd[15].q)
+    mid_step = abs(
+        motion[mid_index + 1].frame.motor_cmd[15].q - motion[mid_index].frame.motor_cmd[15].q
+    )
     assert first_step < mid_step / 10
 
     # Final frames hold the planned joint targets.
@@ -308,7 +317,7 @@ def test_ten_missed_cycles_trigger_watchdog_stop() -> None:
 
     status = executor.get_active_status()
     assert status.is_terminal
-    assert status.value == "stopped"
+    assert status.value == "unknown"
     invocation = executor.active_invocation()
     assert invocation.stop_reason == "watchdog_missed_cycles"
 
@@ -331,7 +340,7 @@ def test_state_age_over_100ms_triggers_watchdog_stop() -> None:
 
     status = executor.get_active_status()
     assert status.is_terminal
-    assert status.value == "stopped"
+    assert status.value == "unknown"
     assert executor.active_invocation().stop_reason == "stale_state"
 
 
@@ -395,9 +404,7 @@ def test_deadline_exceeded_ends_terminal_after_stop_handling() -> None:
     harness.publish_state()
     executor = make_executor(harness)
     plan = harness.make_plan()
-    executor.execute_pose(
-        plan_id=plan.plan_id, caller_id="agent-1", operation_deadline_s=1.0
-    )
+    executor.execute_pose(plan_id=plan.plan_id, caller_id="agent-1", operation_deadline_s=1.0)
 
     for _ in range(1000):
         harness.publish_state()
@@ -424,11 +431,11 @@ def test_safety_fault_ends_failed_and_stop_is_idempotent() -> None:
     harness.publish_state(safety_ok=False)
     harness.clock.advance(0.002)
     executor.tick()
-    assert executor.get_active_status().value == "failed"
+    assert executor.get_active_status().value == "unknown"
 
-    # stop is idempotent against the (now terminal) invocation.
-    assert executor.stop(invocation_id=invocation.invocation_id) == "already_stopped"
-    assert executor.stop() == "already_stopped"
+    # Unknown is not confirmation that the robot stopped.
+    assert executor.stop(invocation_id=invocation.invocation_id) == "unknown"
+    assert executor.stop() == "unknown"
     assert executor.stop(invocation_id="inv-nonsense") == "unknown"
 
 
@@ -451,3 +458,217 @@ def test_unknown_outcome_is_explicit_and_never_retried_implicitly() -> None:
     # instead of silently starting a second physical Action.
     retried = executor.execute_pose(plan_id=plan.plan_id, caller_id="agent-1")
     assert retried.invocation_id == invocation.invocation_id
+
+
+def test_delayed_tick_does_not_burst_commands_or_backdate_evidence():
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h)
+    ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
+    ex.tick()
+    h.clock.advance(0.008)
+    h.publish_state()
+    ex.tick()
+    assert len(h.sink.samples) == 2
+    assert h.sink.samples[-1].t_s == h.clock()
+
+
+def test_restart_reconciles_durable_identity_without_replaying(tmp_path):
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h, journal_path=tmp_path / "actions.sqlite")
+    plan = h.make_plan()
+    first = ex.execute_pose(plan_id=plan.plan_id, caller_id="a")
+    ex.tick()
+    ex.close()
+    restarted = make_executor(h, journal_path=tmp_path / "actions.sqlite")
+    record = restarted.execute_pose(plan_id=plan.plan_id, caller_id="a")
+    assert record.invocation_id == first.invocation_id
+    assert record.status.value == "unknown"
+    restarted.tick()
+    assert h.sink.samples == []
+    restarted.close()
+
+
+def test_stale_feedback_is_unknown_not_confirmed_stop():
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h)
+    ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
+    ex.tick()
+    h.clock.advance(0.101)
+    ex.tick()
+    assert ex.active_invocation().status.value == "unknown"
+
+
+def test_command_completion_without_target_feedback_is_not_success():
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h)
+    ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a", operation_deadline_s=8)
+    for _ in range(4100):
+        h.publish_state()
+        h.clock.advance(0.002)
+        ex.tick()
+        if ex.active_invocation().status.is_terminal:
+            break
+    assert ex.active_invocation().status.value != "succeeded"
+
+
+def test_stop_without_matching_feedback_is_unknown():
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h)
+    ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
+    for _ in range(700):
+        h.publish_state()
+        h.clock.advance(0.002)
+        ex.tick()
+    ex.stop()
+    for _ in range(2000):
+        h.publish_state()
+        h.clock.advance(0.002)
+        ex.tick()
+        if ex.active_invocation().status.is_terminal:
+            break
+    assert ex.active_invocation().status.value == "unknown"
+
+
+def test_stop_decelerates_and_requires_observed_hold():
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h)
+    ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
+    for _ in range(700):
+        h.publish_state()
+        h.clock.advance(0.002)
+        ex.tick()
+    before = h.sink.samples[-1]
+    assert abs(before.frame.motor_cmd[21].dq) > 0.1
+    assert ex.stop() == "accepted"
+    run_to_completion(h)
+    assert ex.active_invocation().status.value == "stopped"
+    after = [s for s in h.sink.samples if s.t_s > before.t_s]
+    assert after[0].frame.motor_cmd[21].dq == pytest.approx(before.frame.motor_cmd[21].dq, abs=0.01)
+    assert after[-1].frame.motor_cmd[21].dq == 0
+    speeds = [s.frame.motor_cmd[21].dq for s in after]
+    accelerations = [(b - a) / 0.002 for a, b in zip(speeds, speeds[1:])]
+    assert max(map(abs, speeds)) <= 0.5
+    assert max(map(abs, accelerations)) <= 2
+    assert max(abs(b - a) / 0.002 for a, b in zip(accelerations, accelerations[1:])) <= 10.01
+
+
+def test_second_executor_cannot_reconcile_a_live_journal(tmp_path):
+    h = Harness()
+    h.publish_state()
+    first = make_executor(h, journal_path=tmp_path / "actions.sqlite")
+    with pytest.raises((OSError, RuntimeError)):
+        make_executor(h, journal_path=tmp_path / "actions.sqlite")
+    first.close()
+
+
+def test_unknown_outcome_closes_readiness_and_stop_does_not_claim_stopped():
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h)
+    record = ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
+    ex.mark_unknown(record.invocation_id, reason="transport_loss")
+    assert not ex.query_state()["action_ready"]
+    assert ex.stop() == "unknown"
+    assert ex.stop(invocation_id=record.invocation_id) == "unknown"
+
+
+def test_completed_invocation_retains_before_during_after_evidence(tmp_path):
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h, journal_path=tmp_path / "actions.sqlite")
+    record = ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
+    run_to_completion(h)
+    evidence = ex.evidence(record.invocation_id)
+    assert [item["phase"] for item in evidence] == ["before", "during", "after"]
+    assert evidence[1]["payload"]["frames"][-1]["seq"] + 1 == record.frames_emitted
+    assert evidence[2]["payload"]["status"] == "succeeded"
+    from PhyAgentOS.verification.g1d_execution import verify_execution
+
+    assert verify_execution(evidence).verdict == "success"
+    import copy
+
+    tampered = copy.deepcopy(evidence)
+    tampered[1]["payload"]["observations"] = []
+    assert verify_execution(tampered).verdict == "inconclusive"
+    relabelled = copy.deepcopy(evidence)
+    for item in relabelled:
+        item["invocation_id"] = "another-operation"
+    assert verify_execution(relabelled).verdict == "inconclusive"
+    ex.close()
+    restored = make_executor(h, journal_path=tmp_path / "actions.sqlite")
+    assert restored.evidence(record.invocation_id) == evidence
+    restored.close()
+
+
+def test_writer_failure_is_unknown_and_cannot_resume():
+    h = Harness()
+    h.publish_state()
+    ex = make_executor(h)
+    record = ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
+
+    def fail(sample):
+        raise OSError("DDS transport lost")
+
+    h.sink.write = fail
+    with pytest.raises(OSError):
+        ex.tick()
+    assert record.status.value == "unknown"
+    ex.tick()
+    assert ex.stop() == "unknown"
+
+
+def test_real_scheduler_streams_without_gateway_polling():
+    import threading
+    import time
+
+    from PhyAgentOS.skill_runtime.g1d_control_loop import G1DControlLoop
+    from PhyAgentOS.skill_runtime.g1d_executor import G1DExecutor
+
+    h = Harness()
+    h.clock = time.monotonic
+    h.adapter = G1DAdapter(clock=h.clock, approved_mode_machine=7)
+    # Use the same binding as the existing planner, whose clock starts at 1000.
+    # Admission must use a plan with the real monotonic clock, too.
+    h.planner = G1DPlanner(
+        kinematics=FixtureKinematics(
+            fixtures=[(dict(HOME_LEFT), dict(HOME_RIGHT), HOME_LEFT_Q, HOME_RIGHT_Q)]
+        ),
+        clock=h.clock,
+        skill_version="test",
+        runtime_instance_id="live",
+        profile_digest="profile",
+    )
+    event = threading.Event()
+    samples = []
+
+    class Sink:
+        def write(self, sample):
+            samples.append(sample)
+            if len(samples) >= 10:
+                event.set()
+
+    h.publish_state()
+    executor = G1DExecutor(
+        adapter=h.adapter,
+        planner=h.planner,
+        clock=h.clock,
+        sink=Sink(),
+        skill_version="test",
+        runtime_instance_id="live",
+        profile_digest="profile",
+    )
+    executor.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
+    loop = G1DControlLoop(executor, h.publish_state)
+    loop.start()
+    try:
+        assert event.wait(2)
+        assert loop.error is None
+        assert all(b.t_s > a.t_s for a, b in zip(samples, samples[1:]))
+    finally:
+        loop.close()

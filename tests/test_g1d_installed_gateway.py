@@ -26,7 +26,7 @@ from scripts.package_skill import package
 BUNDLE = Path(__file__).parents[1] / "bundles/g1d-manipulation"
 
 
-@pytest.mark.parametrize("launch_mode", ["direct", "dora"])
+@pytest.mark.parametrize("launch_mode", ["direct", "dora", "execution"])
 def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatch, launch_mode):
     # Confine the test participant and child process to loopback on a non-robot domain.
     cyclone_xml = '<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces><AllowMulticast>false</AllowMulticast></General><Discovery><Peers><Peer Address="127.0.0.1"/></Peers></Discovery></Domain></CycloneDDS>'
@@ -45,7 +45,7 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
     # The shipped aarch64 lock is checked separately and never relabelled in the Bundle.
     lock = replace(manifest.artifacts.nodes["g1d-runtime"], arch=normalize_arch())
     node = NodeInstaller(tmp_path / "nodes", state_store=store).install(
-        manifest.bundle_root / "artifacts/g1d-runtime-0.2.0.tar.gz", lock
+        manifest.bundle_root / "artifacts/g1d-runtime-0.3.0.tar.gz", lock
     )
     with socket.socket() as available:
         available.bind(("127.0.0.1", 0))
@@ -87,6 +87,55 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
     env.pop("PAOS_G1D_RUNTIME_IMPL", None)
     output = (tmp_path / "runtime.log").open("w+")
     command = [sys.executable, "-I", str(node), "--port", str(port)]
+    supervisor = None
+    supervisor_thread = None
+    if launch_mode == "execution":
+        supervisor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        supervisor_path = tmp_path / "supervisor.sock"
+        supervisor.bind(str(supervisor_path))
+        supervisor.listen()
+        supervisor.settimeout(0.05)
+
+        def serve_authority():
+            while not stop.is_set():
+                try:
+                    connection, _ = supervisor.accept()
+                except socket.timeout:
+                    continue
+                with connection:
+                    request = json.loads(connection.recv(4096))
+                    try:
+                        connection.sendall(
+                            (
+                                json.dumps(
+                                    {
+                                        **request,
+                                        "exclusive": True,
+                                        "handoff_approved": True,
+                                        "operator_ready": True,
+                                        "constraints_verified": True,
+                                    }
+                                )
+                                + "\n"
+                            ).encode()
+                        )
+                    except BrokenPipeError:
+                        pass  # The client conservatively expires a late lease reply.
+
+        supervisor_thread = threading.Thread(target=serve_authority, daemon=True)
+        supervisor_thread.start()
+        control_profile = tmp_path / "control.json"
+        control_profile.write_text(
+            json.dumps({"approved_mode": 7, "gains": [[20.0, 1.0]] * 35, "modes": [1] * 35})
+        )
+        command += [
+            "--control-profile",
+            str(control_profile),
+            "--authority-socket",
+            str(supervisor_path),
+            "--journal",
+            str(tmp_path / "actions.sqlite"),
+        ]
     if launch_mode == "dora":
         import yaml
 
@@ -151,7 +200,7 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
             lambda: (
                 value
                 if (value := query("state", {})["outputs"]).get("safety_gate")
-                == "read_only_unverified"
+                == ("ready" if launch_mode == "execution" else "read_only_unverified")
                 else None
             )
         )
@@ -160,7 +209,53 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
         assert state["mode_machine"] == 7 and state["state_age_ms"] <= 100
         assert state["left_arm"]["joint_positions_rad"] == [0] * 7
         assert state["right_arm"]["joint_positions_rad"] == [0] * 7
-        assert state["action_ready"] is False
+        assert state["action_ready"] is (launch_mode == "execution")
+        if launch_mode == "execution":
+            from PhyAgentOS.skill_runtime.g1d_kinematics_pin import PinKinematics
+
+            poses = PinKinematics().solve_fk([0.0] * 7, [0.0] * 7)
+            target = {
+                side: {
+                    "frame_id": "g1d_base",
+                    "position_m": list(p.position_m),
+                    "orientation_xyzw": list(p.orientation_xyzw),
+                }
+                for side, p in zip(("left", "right"), poses)
+            }
+            plan = query("plan_pose", target)["outputs"]
+            arguments = {"plan_id": plan["plan_id"], "caller_id": "installed-test"}
+            admission = client.post(
+                "/tools/g1d.dual_arm.execute_pose:invoke", json={"arguments": arguments}
+            ).json()["data"]
+            invocation = admission["invocation_id"]
+            assert admission["deadline_ms"] > int(time.time() * 1000) + 25000
+            result = until(
+                lambda: (
+                    v
+                    if (v := client.get(f"/invocations/{invocation}/result").json()["data"])[
+                        "status"
+                    ]
+                    == "available"
+                    else None
+                )
+            )
+            assert result["result"]["status"] in ("succeeded", "unknown"), result
+            frames = commands.take(10000)
+            assert frames
+            assert all(len(frame.motor_cmd) == 35 and frame.mode_machine == 7 for frame in frames)
+            evidence = client.get(f"/g1d/evidence/{invocation}").json()
+            assert [item["phase"] for item in evidence] == ["before", "during", "after"]
+            if result["result"]["status"] == "succeeded":
+                from PhyAgentOS.verification.g1d_execution import verify_execution
+
+                assert verify_execution(evidence).verdict == "success"
+            else:
+                assert result["result"]["error"]["message"] in (
+                    "watchdog_missed_cycles",
+                    "SafetyFaultError",
+                )
+                assert query("state", {})["outputs"]["action_ready"] is False
+            return
         # Independent reference fixture from the URDF chain, not child-process FK.
         targets = {
             "left": {
@@ -227,6 +322,10 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
         stop.set()
         if publisher.is_alive():
             publisher.join(2)
+        if supervisor_thread is not None:
+            supervisor_thread.join(1)
+        if supervisor is not None:
+            supervisor.close()
         client.close()
         os.killpg(process.pid, signal.SIGINT)
         process.wait(timeout=10)

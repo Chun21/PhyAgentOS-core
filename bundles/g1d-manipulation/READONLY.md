@@ -15,7 +15,7 @@ the unchanged upstream Forge Gateway/ToolEndpoint source, configuration,
 URDF and license notices. It needs no source checkout or implementation override.
 
 1. Verify the release SHA-256 obtained from the release producer. Install the
-   Bundle using `paos skill install /path/g1d-manipulation-0.2.0.tar.gz --local`.
+   Bundle using `paos skill install /path/g1d-manipulation-0.3.0.tar.gz --local`.
 2. Locate the installed Bundle (`paos skill inspect g1d-manipulation`), and
    set `G1D_BUNDLE` to that directory. Create the locked numerical/transport
    conda environment:
@@ -36,7 +36,7 @@ URDF and license notices. It needs no source checkout or implementation override
 3. Install and verify the Node from the Bundle:
 
    ```bash
-   paos forge-node install g1d-manipulation g1d-runtime --archive "$G1D_BUNDLE/artifacts/g1d-runtime-0.2.0.tar.gz"
+   paos forge-node install g1d-manipulation g1d-runtime --archive "$G1D_BUNDLE/artifacts/g1d-runtime-0.3.0.tar.gz"
    paos forge-node verify g1d-manipulation g1d-runtime
    ```
 

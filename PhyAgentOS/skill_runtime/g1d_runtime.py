@@ -62,6 +62,7 @@ class G1DReadOnlyRuntime:
             "orientation_tolerance_deg": 5.0,
             "max_joint_velocity_rad_per_s": 0.5,
             "max_joint_acceleration_rad_per_s2": 2.0,
+            "max_joint_jerk_rad_per_s3": 10.0,
         }
         if any(self.config.get(key) != value for key, value in fixed.items()):
             raise ValueError("unsupported or invalid planning profile")
@@ -107,12 +108,15 @@ class G1DReadOnlyRuntime:
         self.planner = G1DPlanner(
             kinematics=self.kinematics,
             clock=clock,
-            skill_version="0.2.0",
+            skill_version="0.3.0",
             runtime_instance_id=self.instance_id,
             profile_digest=digest_json({"profile": self.config, "tools": self.tools}),
             joint_limits_rad=limits,
             base_frame="g1d_base",
             require_current_state=True,
+            max_joint_velocity_rad_per_s=self.config["max_joint_velocity_rad_per_s"],
+            max_joint_acceleration_rad_per_s2=self.config["max_joint_acceleration_rad_per_s2"],
+            max_joint_jerk_rad_per_s3=self.config["max_joint_jerk_rad_per_s3"],
         )
 
     def poll(self) -> None:
@@ -165,13 +169,14 @@ class G1DReadOnlyRuntime:
                 result[f"{side}_arm"] = {"joint_positions_rad": [motor.q for motor in arm]}
             return result
 
+    def _validate_dex1(self, arguments: dict[str, Any]) -> None:
+        if any("dex1" in arguments[side] for side in ("left", "right")):
+            raise PlannerError("requested Dex1 readiness is unavailable in the read-only profile")
+
     def plan_pose(self, arguments: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
-            if any("dex1" in arguments[side] for side in ("left", "right")):
-                raise PlannerError(
-                    "requested Dex1 readiness is unavailable in the read-only profile"
-                )
-            state = self.state()
+            self._validate_dex1(arguments)
+            state = G1DReadOnlyRuntime.state(self)
             if state["safety_gate"] != "read_only_unverified":
                 raise PlannerError(f"valid planning state required: {state['safety_gate']}")
             assert self._positions is not None

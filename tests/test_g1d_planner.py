@@ -338,3 +338,11 @@ def test_pose_plan_identity_uses_binding_digests() -> None:
         }
     )
     assert math.isfinite(plan.expires_at)
+
+
+def test_rejects_nonfinite_or_nonpositive_motion_limits():
+    from PhyAgentOS.skill_runtime.g1d_planner import PlannerError
+    for key in ('max_joint_velocity_rad_per_s', 'max_joint_acceleration_rad_per_s2'):
+        for value in (0, -1, float('nan'), float('inf')):
+            with pytest.raises(PlannerError):
+                make_planner(Clock(), **{key: value})

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 
 import pytest
@@ -14,8 +13,7 @@ from PhyAgentOS.skill_runtime.g1d_dex1 import (
     FakeDex1StateSource,
     InvalidOpeningError,
 )
-from PhyAgentOS.skill_runtime.g1d_executor import Dex1GateError
-from PhyAgentOS.skill_runtime.g1d_executor import G1DExecutor, RecordingSink
+from PhyAgentOS.skill_runtime.g1d_executor import Dex1GateError, G1DExecutor, RecordingSink
 from PhyAgentOS.skill_runtime.g1d_planner import (
     FixtureKinematics,
     G1DPlanner,
@@ -126,7 +124,7 @@ class Harness:
             left["dex1"] = left_dex1
         if right_dex1 is not None:
             right["dex1"] = right_dex1
-        return self.planner.plan_pose(left=left, right=right)
+        return self.planner.plan_pose(left=left, right=right, current_q=ARM_START)
 
 
 # ---------------------------------------------------------------------------
@@ -331,5 +329,12 @@ def test_dex1_stream_going_stale_mid_execution_stops_the_action() -> None:
 
     status = harness.executor.get_active_status()
     assert status is not None and status.is_terminal
-    assert status.value == "stopped"
+    assert status.value == "unknown"
     assert harness.executor.active_invocation().stop_reason == "dex1_left_stale"
+
+
+@pytest.mark.parametrize('stamp', [float('nan'), float('inf'), 1001.0])
+def test_invalid_dex1_timestamp_never_reports_healthy(stamp):
+    integration = Dex1Integration(clock=lambda: 1000.)
+    integration.publish('left', opening=.5, received_at=stamp)
+    assert not integration.readiness('left').ok

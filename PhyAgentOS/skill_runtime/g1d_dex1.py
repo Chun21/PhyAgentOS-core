@@ -121,7 +121,7 @@ class Dex1Integration:
         max_state_age_s: float = DEFAULT_DEX1_MAX_STATE_AGE_S,
         sources: Mapping[str, Dex1StateSource] | None = None,
     ) -> None:
-        if max_state_age_s <= 0:
+        if not math.isfinite(max_state_age_s) or max_state_age_s <= 0:
             raise Dex1Error("max_state_age_s must be positive")
         self._clock = clock
         self._max_state_age_s = float(max_state_age_s)
@@ -142,14 +142,20 @@ class Dex1Integration:
         _validate_side(side)
         source = self._sources.get(side)
         if source is not None:
-            item = source.read(side)
-            if item is not None:
-                self._latest[side] = (validate_opening(item[0]), float(item[1]))
+            try:
+                item = source.read(side)
+                if item is not None:
+                    self._latest[side] = (validate_opening(item[0]), float(item[1]))
+            except (Dex1Error, ValueError, OSError, TypeError):
+                self._latest.pop(side, None)
+                return Dex1Readiness(side=side, status=Dex1Status.STALE)
         item = self._latest.get(side)
         if item is None:
             return Dex1Readiness(side=side, status=Dex1Status.ABSENT)
         opening, received_at = item
         age_s = self._clock() - received_at
+        if not math.isfinite(age_s) or age_s < 0:
+            return Dex1Readiness(side=side, status=Dex1Status.STALE, opening=opening)
         if age_s > self._max_state_age_s:
             return Dex1Readiness(
                 side=side, status=Dex1Status.STALE, opening=opening, age_ms=age_s * 1000.0
@@ -191,7 +197,7 @@ class Dex1Integration:
                     f"requested Dex1 {side} state is {readiness.status.value}"
                     + (
                         f" (age {readiness.age_ms:.1f} ms, timed out)"
-                        if readiness.timed_out
+                        if readiness.timed_out and readiness.age_ms is not None
                         else ""
                     )
                 )

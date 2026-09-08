@@ -138,8 +138,10 @@ class ConformanceHarness:
     # -- fake DDS publishers ------------------------------------------------
 
     def publish_arm(self) -> None:
+        samples = [s for s in self.sink.samples if hasattr(s, "frame")]
+        positions = [m.q for m in samples[-1].frame.motor_cmd] if samples else ARM_START
         self.adapter.ingest(
-            make_lowstate_frame(mode_machine=7, tick=42, positions=ARM_START, mode=[1] * 35),
+            make_lowstate_frame(mode_machine=7, tick=int(round(self.clock()*500)), positions=positions, mode=[1] * 35),
             received_at=self.clock(),
         )
 
@@ -147,7 +149,7 @@ class ConformanceHarness:
         self.dex1.publish(side, opening=opening, received_at=self.clock())
 
     def make_plan(self):
-        return self.planner.plan_pose(left=HOME_LEFT, right=HOME_RIGHT)
+        return self.planner.plan_pose(left=HOME_LEFT, right=HOME_RIGHT, current_q=ARM_START)
 
     # -- lifecycle driving ---------------------------------------------------
 

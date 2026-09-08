@@ -1,0 +1,22 @@
+--- a/forge_gateway/services/tool_gateway_service.py
++++ b/forge_gateway/services/tool_gateway_service.py
+@@ -499,12 +499,18 @@
+         # (mark_deadlines_ambiguous) must never pin them to `unknown`.
+         # The bounded handshake exchange below keeps its own timeout, and
+         # provider death mid-session is caught by lease-expiry ambiguity.
++        operation_timeout = effective_timeout
++        if spec.tool_id == "g1d.dual_arm.execute_pose":
++            seconds = arguments.get("operation_deadline_s", 30.0)
++            if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 1 <= seconds <= 120:
++                raise ValueError("operation_deadline_s must be within [1, 120]")
++            operation_timeout = int(seconds * 1000)
+         deadline_ms = (
+             None
+             if spec.semantics == "session"
+             else min(
+                 _MAX_SAFE_JSON_INTEGER,
+-                int(time.time() * 1_000) + effective_timeout,
++                int(time.time() * 1_000) + operation_timeout,
+             )
+         )
+         context = ToolContext(

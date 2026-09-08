@@ -39,7 +39,9 @@ from forge_tool import (
 from forge_tool.handler import ToolEndpointHandler
 from jsonschema import Draft202012Validator, ValidationError
 
+from PhyAgentOS.skill_runtime.g1d_action_endpoint import G1DActionEndpoint
 from PhyAgentOS.skill_runtime.g1d_bridge import CycloneLowStateSource
+from PhyAgentOS.skill_runtime.g1d_execution_runtime import G1DExecutionRuntime
 from PhyAgentOS.skill_runtime.g1d_planner import PlannerError
 from PhyAgentOS.skill_runtime.g1d_runtime import G1DReadOnlyRuntime
 
@@ -87,7 +89,9 @@ class ReadOnlyEndpoint:
         )
 
     async def cancel(self, key: Any, reason: str | None = None) -> ToolControlResponse:
-        return ToolControlResponse("cancel", "not_found")
+        return ToolControlResponse(
+            "cancel", "rejected", error=ToolError("not_found", "No accepted operation")
+        )
 
     async def status(self, key: Any) -> ToolExecutionStatus:
         return ToolExecutionStatus(
@@ -103,11 +107,17 @@ class G1DGateway:
 
     def __init__(self, runtime: G1DReadOnlyRuntime) -> None:
         self.runtime = runtime
+        self.action_endpoint = (
+            G1DActionEndpoint(runtime.executor, ReadOnlyEndpoint(runtime).validate)
+            if isinstance(runtime, G1DExecutionRuntime)
+            else None
+        )
         operations = tuple(
             ToolOperationDescriptor(
                 name=spec["operation"],
                 semantics=spec["semantics"],
                 status_supported=spec["semantics"] == "action",
+                cancellable=spec["semantics"] == "action",
                 max_concurrency=spec["max_concurrency"],
             )
             for spec in runtime.tools.values()
@@ -117,7 +127,12 @@ class G1DGateway:
             self.descriptor,
             endpoint_instance_id=runtime.instance_id,
             operations={
-                spec["operation"]: ReadOnlyEndpoint(runtime) for spec in runtime.tools.values()
+                spec["operation"]: (
+                    self.action_endpoint
+                    if spec["semantics"] == "action" and self.action_endpoint
+                    else ReadOnlyEndpoint(runtime)
+                )
+                for spec in runtime.tools.values()
             },
         )
         specs = [
@@ -154,6 +169,9 @@ class G1DGateway:
     def readiness(self) -> dict[str, Any]:
         return self.runtime.state()
 
+    async def _event(self, envelope: Any) -> None:
+        self._receive(envelope)
+
     def _receive(self, envelope: Any) -> None:
         self.tool_gateway.handle_input(PROVIDER_INPUT, envelope, received_at=time.monotonic())
 
@@ -174,12 +192,16 @@ class G1DGateway:
 
     def start(self) -> None:
         self._announce()
+        if isinstance(self.runtime, G1DExecutionRuntime):
+            self.runtime.control.start()
         self.worker.start()
 
     def close(self) -> None:
         self.stop_event.set()
         self.worker.join(timeout=5)
         self.tool_gateway.close()
+        if isinstance(self.runtime, G1DExecutionRuntime):
+            self.runtime.control.close()
         if self.worker.is_alive():
             raise RuntimeError("G1_D endpoint did not stop")
 
@@ -188,18 +210,33 @@ class G1DGateway:
             with asyncio.Runner() as runner:
                 next_announce = 0.0
                 while not self.stop_event.is_set():
-                    self.runtime.poll()
+                    if not isinstance(self.runtime, G1DExecutionRuntime):
+                        self.runtime.poll()
+                    elif self.runtime.control.error is not None:
+                        raise RuntimeError(
+                            "execution control loop failed"
+                        ) from self.runtime.control.error
                     if time.monotonic() >= next_announce:
                         self._announce()
                         next_announce = time.monotonic() + 0.05
                     message = self.tool_gateway.take_outbound()
                     if message is not None and message.kind != "provider.registry_response":
-                        for response in runner.run(self.handler.dispatch(message.envelope)):
+                        for response in runner.run(
+                            self.handler.dispatch(message.envelope, event_sink=self._event)
+                        ):
                             self._receive(response)
+                    if self.action_endpoint is not None:
+                        runner.run(self.action_endpoint.emit_updates())
                     self.tool_gateway.sweep()
                     self.stop_event.wait(0.002)
         except BaseException as error:
             self.worker_error = error
+            if isinstance(self.runtime, G1DExecutionRuntime):
+                record = self.runtime.executor.active_invocation()
+                if record is not None and not record.status.is_terminal:
+                    self.runtime.executor.mark_unknown(
+                        record.invocation_id, reason="gateway_transport_loss"
+                    )
             self.tool_gateway.close()
 
     def app(self) -> FastAPI:
@@ -213,6 +250,20 @@ class G1DGateway:
 
         app = FastAPI(lifespan=lifespan)
         register_tool_routes(app, self)
+        if isinstance(self.runtime, G1DExecutionRuntime):
+            executor = self.runtime.executor
+
+            @app.get("/g1d/evidence/{invocation_id}")
+            def evidence(invocation_id: str):
+                from fastapi import HTTPException
+
+                from PhyAgentOS.skill_runtime.g1d_executor import UnknownInvocationError
+
+                try:
+                    return executor.evidence(invocation_id)
+                except UnknownInvocationError as error:
+                    raise HTTPException(404, str(error)) from error
+
         return app
 
 
@@ -223,7 +274,18 @@ def main() -> None:
     parser.add_argument("--profile", default=os.environ.get("PAOS_G1D_PROFILE", "real-g1d"))
     parser.add_argument("--host", default=os.environ.get("PAOS_G1D_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PAOS_G1D_PORT", "19082")))
+    parser.add_argument(
+        "--control-profile", type=Path, help="site-verified 35-slot control profile"
+    )
+    parser.add_argument(
+        "--authority-socket", type=Path, help="approved robot-supervisor Unix socket"
+    )
+    parser.add_argument("--journal", type=Path, help="durable invocation/evidence SQLite path")
     args = parser.parse_args()
+    if any((args.control_profile, args.authority_socket, args.journal)) and not all(
+        (args.control_profile, args.authority_socket, args.journal)
+    ):
+        parser.error("execution requires control-profile, authority-socket and journal together")
     if args.profile != "real-g1d":
         parser.error("unknown profile")
     # Establish the managed Dora node connection only when launched by Dora.
@@ -236,11 +298,46 @@ def main() -> None:
     root = Path(
         os.environ.get("PAOS_SKILL_ROOT", str(Path(__file__).resolve().parents[2] / "bundle"))
     )
-    runtime = G1DReadOnlyRuntime(
-        root,
-        source=CycloneLowStateSource(domain_id=int(os.environ.get("PAOS_G1D_DDS_DOMAIN", "0"))),
-        profile=args.profile,
-    )
+    source = CycloneLowStateSource(domain_id=int(os.environ.get("PAOS_G1D_DDS_DOMAIN", "0")))
+    authority = None
+    runtime: G1DReadOnlyRuntime
+    if args.control_profile:
+        import json
+
+        from PhyAgentOS.skill_runtime.g1d_authority import SupervisorAuthority
+        from PhyAgentOS.skill_runtime.g1d_bridge import CycloneLowCmdSink
+        from PhyAgentOS.skill_runtime.g1d_dex1 import Dex1Integration
+        from PhyAgentOS.skill_runtime.g1d_dex1_bridge import CycloneDex1Bridge, G1DCommandSink
+        from PhyAgentOS.skill_runtime.g1d_planner import digest_json
+
+        config = json.loads(args.control_profile.read_text())
+        authority = SupervisorAuthority(args.authority_socket, digest_json(config))
+        domain = int(os.environ.get("PAOS_G1D_DDS_DOMAIN", "0"))
+        dex_bridge = (
+            CycloneDex1Bridge(domain_id=domain, **config["dex1"]) if config.get("dex1") else None
+        )
+        dex1 = (
+            Dex1Integration(
+                clock=time.monotonic, sources={side: dex_bridge for side in ("left", "right")}
+            )
+            if dex_bridge
+            else None
+        )
+        runtime = G1DExecutionRuntime(
+            root,
+            source=source,
+            sink=G1DCommandSink(CycloneLowCmdSink(domain_id=domain), dex_bridge),
+            journal_path=args.journal,
+            approved_mode=config["approved_mode"],
+            gains=config["gains"],
+            modes=config["modes"],
+            require_ownership=authority.require,
+            clock=time.monotonic,
+            dex1=dex1,
+        )
+        authority.start()
+    else:
+        runtime = G1DReadOnlyRuntime(root, source=source, profile=args.profile)
     server = uvicorn.Server(
         uvicorn.Config(G1DGateway(runtime).app(), host=args.host, port=args.port)
     )
@@ -262,5 +359,7 @@ def main() -> None:
         server.run()
     finally:
         finished.set()
+        if authority is not None:
+            authority.close()
         if monitor is not None:
             monitor.join(timeout=2)
