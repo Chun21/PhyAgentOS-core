@@ -82,14 +82,18 @@ class RuntimeManager:
             raise RuntimeManagerError("Skill and profile names must be Dora-name safe")
         return safe
 
-    def start(self, skill_name: str, profile_name: str) -> RuntimeState:
+    def start(self, skill_name: str, profile_name: str, *, operator_confirmed: bool = False,
+              max_arm_excursion_rad: float | None = None) -> RuntimeState:
         try:
             with SkillOperationLock(self.state_store.root, skill_name):
-                return self._start_locked(skill_name, profile_name)
+                return self._start_locked(skill_name, profile_name,
+                                          operator_confirmed=operator_confirmed,
+                                          max_arm_excursion_rad=max_arm_excursion_rad)
         except (SkillOperationBusyError, ValueError) as exc:
             raise RuntimeManagerError(str(exc)) from exc
 
-    def _start_locked(self, skill_name: str, profile_name: str) -> RuntimeState:
+    def _start_locked(self, skill_name: str, profile_name: str, *, operator_confirmed: bool = False,
+                      max_arm_excursion_rad: float | None = None) -> RuntimeState:
         manifest = self.catalog.get(skill_name)
         profile = manifest.profiles.get(profile_name)
         if profile is None:
@@ -135,7 +139,9 @@ class RuntimeManager:
             self._run_start_hook(manifest, profile_name)
             self._ensure_dora_up(manifest, profile, binary_root)
             launched = True
-            self._start_flow(flow_name, manifest, profile, binary_root)
+            self._start_flow(flow_name, manifest, profile, binary_root,
+                             operator_confirmed=operator_confirmed,
+                             max_arm_excursion_rad=max_arm_excursion_rad)
             self._wait_until_ready(manifest, flow_name)
             snapshot = self._gateway_snapshot(manifest) or {}
             data = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
@@ -366,6 +372,7 @@ class RuntimeManager:
         skill: SkillManifest,
         profile: RuntimeProfile,
         binary_root: Path,
+        *, operator_confirmed: bool = False, max_arm_excursion_rad: float | None = None,
     ) -> None:
         dora = shutil.which("dora")
         assert dora is not None
@@ -408,6 +415,7 @@ class RuntimeManager:
         skill: SkillManifest,
         profile: RuntimeProfile,
         binary_root: Path,
+        *, operator_confirmed: bool = False, max_arm_excursion_rad: float | None = None,
     ) -> None:
         dora = shutil.which("dora")
         assert dora is not None
@@ -420,6 +428,15 @@ class RuntimeManager:
             "PAOS_SKILL_NAME": skill.name,
             "PAOS_SKILL_VERSION": skill.version,
         }
+        if skill.name == "g1d-manipulation" and operator_confirmed:
+            env.update({
+                "PAOS_G1D_CONTROL_ENABLED": "1",
+                "PAOS_G1D_OPERATOR_CONFIRMED": "1",
+                "PAOS_G1D_CONTROL_PROFILE": str(skill.bundle_root / "profiles/real-g1d/control.json"),
+                "PAOS_G1D_JOURNAL": str(skill.bundle_root / "run/actions.sqlite"),
+                "PAOS_G1D_PORT": "19083",
+                "PAOS_G1D_MAX_ARM_EXCURSION_RAD": str(max_arm_excursion_rad or 1.5),
+            })
         self.logs_root.mkdir(parents=True, exist_ok=True)
         launch_log = self.logs_root / f"{flow_name}-dora.log"
         with launch_log.open("ab") as output:

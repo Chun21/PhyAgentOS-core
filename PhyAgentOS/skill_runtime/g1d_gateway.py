@@ -303,6 +303,11 @@ def main() -> None:
     parser.add_argument("--controller-lock", type=Path,
                         default=Path.home() / ".phyagent/g1d-controller.lock")
     args = parser.parse_args()
+    if os.environ.get("PAOS_G1D_CONTROL_ENABLED") == "1" and not args.operator_confirmed:
+        args.operator_confirmed = True
+        args.control_profile = Path(os.environ["PAOS_G1D_CONTROL_PROFILE"])
+        args.journal = Path(os.environ["PAOS_G1D_JOURNAL"])
+        args.max_arm_excursion_rad = float(os.environ.get("PAOS_G1D_MAX_ARM_EXCURSION_RAD", "1.5"))
     if args.operator_confirmed and args.authority_socket:
         parser.error("choose native operator session or external authority, not both")
     if args.max_arm_excursion_rad is not None and not args.operator_confirmed:

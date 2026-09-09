@@ -3,7 +3,7 @@ name: g1d-manipulation
 version: 0.3.0
 description: Supervised visual-free dual-arm manipulation for Unitree G1_D.
 skill_document: SKILL.md
-gateway_url: http://127.0.0.1:19082
+gateway_url: http://127.0.0.1:19083
 required_tools:
 - g1d.dual_arm.plan_pose
 - g1d.dual_arm.execute_pose
@@ -32,4 +32,4 @@ artifacts:
       arch: aarch64
       artifact_type: executable_tar_gz
       entrypoint: g1d-runtime
-      sha256: 6a5d89e013a8251416ee16513ecbf94834457b0124390a8ed463d27de5a0ca1c
+      sha256: 158155aec7b5b60751caf464f1b646701f8d8613474c5100d74c3b29810566fd

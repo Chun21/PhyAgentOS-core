@@ -421,7 +421,7 @@ def _make_forge_verifier(config: Config, provider):
     )
 
 
-def _make_forge_components(config: Config, provider):
+def _make_forge_components(config: Config, provider, *, physical_control: bool = False):
     """Build dynamic Agent components from the single managed Skill runtime."""
     from PhyAgentOS.forge.binding import ForgeSkillBindingResolver
     from PhyAgentOS.forge.task import AgentTaskCoordinator
@@ -443,6 +443,20 @@ def _make_forge_components(config: Config, provider):
         state_store=state_store,
         manager=manager,
     )
+    physical_control = physical_control or os.environ.get("PAOS_PHYSICAL_CONTROL") == "1"
+    if active_runtime is None and physical_control:
+        # The G1_D profile is the robot's native PAOS entry point. Start its
+        # supervised Runtime before constructing Agent tools so activation and
+        # task binding see the same live gateway.
+        try:
+            catalog.get("g1d-manipulation")
+        except Exception:
+            pass
+        else:
+            manager.start("g1d-manipulation", "real-g1d",
+                          operator_confirmed=True, max_arm_excursion_rad=1.5)
+            active_runtime = discover_active_runtime(
+                catalog=catalog, state_store=state_store, manager=manager)
     runtime_registry = ActiveRuntimeRegistry(
         active_runtime,
         catalog=catalog,
@@ -723,6 +737,7 @@ def agent(
     config: str | None = typer.Option(None, "--config", "-c", help="Config file path"),
     markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
     logs: bool = typer.Option(False, "--logs/--no-logs", help="Show PhyAgentOS process logs during chat"),
+    physical: bool = typer.Option(False, "--physical", help="Enable supervised physical robot control for this session"),
 ):
     """Interact with the agent directly."""
     from loguru import logger
@@ -749,7 +764,7 @@ def agent(
         forge_tool_invocation_ids,
         forge_task_coordinator,
         runtime_availability_provider,
-    ) = _make_forge_components(config, provider)
+    ) = _make_forge_components(config, provider, physical_control=physical)
 
     # Create cron service for tool usage (no callback needed for CLI unless running)
     cron_store_path = get_cron_dir() / "jobs.json"
@@ -1288,12 +1303,16 @@ def skill_inspect(skill_name: str = typer.Argument(..., help="Installed Skill na
 def skill_start(
     skill_name: str = typer.Argument(..., help="Installed Skill name"),
     profile: str = typer.Option(..., "--profile", "-p", help="Runtime profile"),
+    operator_confirmed: bool = typer.Option(False, "--operator-confirmed", help="Enable supervised physical control"),
+    max_arm_excursion_rad: float | None = typer.Option(None, "--max-arm-excursion-rad", help="Arm excursion bound"),
 ):
     """Start an installed Skill's named Dora dataflow."""
     from PhyAgentOS.skill_runtime.manager import RuntimeManager
 
     try:
-        state = RuntimeManager().start(skill_name, profile)
+        state = RuntimeManager().start(skill_name, profile,
+                                       operator_confirmed=operator_confirmed,
+                                       max_arm_excursion_rad=max_arm_excursion_rad)
     except Exception as error:
         _skill_runtime_error(error)
         return

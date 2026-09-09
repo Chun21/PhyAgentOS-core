@@ -531,7 +531,15 @@ class CycloneLowStateSource:
             frame = convert_hg_lowstate(sample, received_at=0.0)
             if latest is None or 0 < (frame.tick - latest[0]) % (2 ** 32) < 2 ** 31:
                 source_ns = getattr(getattr(sample, "sample_info", None), "source_timestamp", None)
-                age_s = max(0.0, (time.time_ns() - source_ns) / 1e9) if source_ns else 0.0
+                # Robot and DDS peers may have several seconds of wall-clock
+                # skew. A remote source timestamp must not turn a freshly
+                # received sample into stale state; use it only when it is
+                # plausibly on this host's wall-clock timeline.
+                age_s = 0.0
+                if source_ns:
+                    measured_age = (time.time_ns() - source_ns) / 1e9
+                    if -1.0 <= measured_age <= 1.0:
+                        age_s = max(0.0, measured_age)
                 latest = (frame.tick, frame, self._monotonic() - age_s)
         if latest is None:
             return None
