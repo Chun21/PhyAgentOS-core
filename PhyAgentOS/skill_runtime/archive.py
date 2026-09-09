@@ -199,7 +199,14 @@ class ArchiveValidator:
                     ):
                         raise ArchiveError(f"file sha256 mismatch: {path.as_posix()}")
                     safe_mode = member.mode & 0o755
-                    os.chmod(target, safe_mode or 0o600, follow_symlinks=False)
+                    # Some supported Python/OS combinations expose chmod but
+                    # do not implement its follow_symlinks keyword (notably
+                    # the robot's aarch64 runtime). Targets are regular files
+                    # created above, so the fallback is equivalent here.
+                    try:
+                        os.chmod(target, safe_mode or 0o600, follow_symlinks=False)
+                    except (NotImplementedError, TypeError):
+                        os.chmod(target, safe_mode or 0o600)
             return destination
         except Exception:
             import shutil
