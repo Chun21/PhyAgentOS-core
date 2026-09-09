@@ -46,7 +46,7 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
     # The shipped aarch64 lock is checked separately and never relabelled in the Bundle.
     lock = replace(manifest.artifacts.nodes["g1d-runtime"], arch=normalize_arch())
     node = NodeInstaller(tmp_path / "nodes", state_store=store).install(
-        manifest.bundle_root / "artifacts/g1d-runtime-0.3.0.tar.gz", lock
+        manifest.bundle_root / f"artifacts/g1d-runtime-{lock.version}.tar.gz", lock
     )
     with socket.socket() as available:
         available.bind(("127.0.0.1", 0))

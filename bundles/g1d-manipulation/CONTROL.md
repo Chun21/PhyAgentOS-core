@@ -14,7 +14,26 @@ follow validated plans. Other slots remain disabled. Gains match the pinned unir
 G1_D configuration. Gravity feedforward is currently zero in the execution stream;
 the aligned IK's gravity output is not applied by this controller.
 
-On the robot, with the extracted bundle and repository launcher available:
+For normal interaction on the robot, use the installed Skill and PAOS CLI:
+
+```bash
+conda activate phyagent
+cd ~/PhyAgentOS-core
+paos agent --physical
+```
+
+This session follows the CLI lifetime instead of ending after 300 seconds. A local
+heartbeat renews every second while the CLI is alive, including while waiting for
+input or the model. `exit`, EOF, Ctrl+C, SIGTERM, or SIGHUP revoke the lease; the
+Runtime stops publishing and attempts to restore factory `ai` mode. If the CLI
+crashes or is killed, a missing heartbeat expires within 10 seconds. Recovery
+still requires no competing writer. State, joint, trajectory, and mode watchdogs
+remain active; a fault ends the session and is not automatically rearmed.
+Only one physical CLI may own the Runtime. Exit the old controlling CLI before
+opening another one. An old timed Runtime must be stopped before upgrading.
+
+The standalone diagnostic launcher retains its fixed `--session-seconds` limit.
+Do not run it alongside `paos agent --physical`:
 
 ```bash
 conda activate phyagent

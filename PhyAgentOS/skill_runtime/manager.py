@@ -83,17 +83,19 @@ class RuntimeManager:
         return safe
 
     def start(self, skill_name: str, profile_name: str, *, operator_confirmed: bool = False,
-              max_arm_excursion_rad: float | None = None) -> RuntimeState:
+              max_arm_excursion_rad: float | None = None, agent_lease: Path | None = None) -> RuntimeState:
+        if agent_lease is not None and not operator_confirmed:
+            raise RuntimeManagerError("agent lease requires explicit physical control authorization")
         try:
             with SkillOperationLock(self.state_store.root, skill_name):
                 return self._start_locked(skill_name, profile_name,
                                           operator_confirmed=operator_confirmed,
-                                          max_arm_excursion_rad=max_arm_excursion_rad)
+                                          max_arm_excursion_rad=max_arm_excursion_rad, agent_lease=agent_lease)
         except (SkillOperationBusyError, ValueError) as exc:
             raise RuntimeManagerError(str(exc)) from exc
 
     def _start_locked(self, skill_name: str, profile_name: str, *, operator_confirmed: bool = False,
-                      max_arm_excursion_rad: float | None = None) -> RuntimeState:
+                      max_arm_excursion_rad: float | None = None, agent_lease: Path | None = None) -> RuntimeState:
         manifest = self.catalog.get(skill_name)
         profile = manifest.profiles.get(profile_name)
         if profile is None:
@@ -110,6 +112,11 @@ class RuntimeManager:
         ):
             report = self.status(skill_name)
             if report.ready:
+                if agent_lease is not None:
+                    raise RuntimeManagerError(
+                        "G1_D Runtime is already running in another session. "
+                        "Exit its controlling agent or stop that Skill before starting a new physical TUI."
+                    )
                 return report.state  # type: ignore[return-value]
 
         try:
@@ -143,7 +150,7 @@ class RuntimeManager:
             log_offset = launch_log.stat().st_size if launch_log.exists() else 0
             self._start_flow(flow_name, manifest, profile, binary_root,
                              operator_confirmed=operator_confirmed,
-                             max_arm_excursion_rad=max_arm_excursion_rad)
+                             max_arm_excursion_rad=max_arm_excursion_rad, agent_lease=agent_lease)
             self._wait_until_ready(manifest, flow_name, log_offset=log_offset)
             snapshot = self._gateway_snapshot(manifest) or {}
             data = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
@@ -417,6 +424,7 @@ class RuntimeManager:
         profile: RuntimeProfile,
         binary_root: Path,
         *, operator_confirmed: bool = False, max_arm_excursion_rad: float | None = None,
+        agent_lease: Path | None = None,
     ) -> None:
         dora = shutil.which("dora")
         assert dora is not None
@@ -435,6 +443,7 @@ class RuntimeManager:
                 "PAOS_G1D_CONTROL_PROFILE": str(skill.bundle_root / "profiles/real-g1d/control.json"),
                 "PAOS_G1D_JOURNAL": str(skill.bundle_root / "run/actions.sqlite"),
                 "PAOS_G1D_PORT": "19083",
+                "PAOS_G1D_AGENT_LEASE": str(agent_lease.resolve()) if agent_lease else "",
                 "PAOS_G1D_MAX_ARM_EXCURSION_RAD": str(
                     1.5 if max_arm_excursion_rad is None else max_arm_excursion_rad),
             })

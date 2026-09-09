@@ -56,13 +56,15 @@ class ControlSession:
     """Explicit handoff, persistent hold and bounded recovery around the executor."""
 
     def __init__(self, *, config, source, sink, motion, discovery,
-                 lock_path: Path, duration_s=300.0, clock=time.monotonic):
+                 lock_path: Path, duration_s=300.0, clock=time.monotonic,
+                 agent_lease: Path | None = None):
         validate_control_profile(config)
         if not 10 <= duration_s <= 1800:
             raise ValueError("operator session duration must be 10..1800 seconds")
         self.config, self.source, self.sink = config, source, sink
         self.motion, self.discovery = motion, discovery
         self.lock_path, self.duration_s, self.clock = lock_path, duration_s, clock
+        self.agent_lease = agent_lease
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._writer_thread = None
@@ -108,6 +110,8 @@ class ControlSession:
         self._file = self.lock_path.open("a")
         try:
             fcntl.flock(self._file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if self.agent_lease is not None:
+                self._renew_agent_lease()
             deadline = self.clock() + 5
             while True:
                 self.discovery.poll()
@@ -129,6 +133,8 @@ class ControlSession:
             if len(self.discovery.poll() - {str(self.sink.writer_guid)}) > 1:
                 raise SafetyFaultError("multiple lowcmd writers before handoff")
             # A timeout may mean release happened. Recovery must reconcile it.
+            if self.agent_lease is not None:
+                self._renew_agent_lease()
             self._released = True
             self.motion.release()
             deadline = self.clock() + 5
@@ -145,6 +151,8 @@ class ControlSession:
                 motor_cmd=tuple(MotorCommand(mode=mode, q=q, kp=gain[0], kd=gain[1])
                     for q, mode, gain in zip(state.positions, self.config["modes"], self.config["gains"])))
             self._expires = self.clock() + self.duration_s
+            if self.agent_lease is not None:
+                self._renew_agent_lease()
             self._monitor_at = self.clock()
             self._ready = True
             self._writer_thread = threading.Thread(target=self._run_writer, name="g1d-session-hold", daemon=True)
@@ -154,6 +162,14 @@ class ControlSession:
         except BaseException:
             self.close()
             raise
+
+    def _renew_agent_lease(self):
+        from PhyAgentOS.skill_runtime.agent_lease import lease_deadline
+
+        try:
+            self._expires = lease_deadline(self.agent_lease, self.clock())
+        except ValueError as exc:
+            raise SafetyFaultError(str(exc)) from exc
 
     def require(self):
         if not self._ready or self._stop.is_set() or self.error:
@@ -233,6 +249,8 @@ class ControlSession:
     def _run_monitor(self):
         try:
             while not self._stop.wait(.1):
+                if self.agent_lease is not None:
+                    self._renew_agent_lease()
                 other = self.discovery.poll() - {str(self.sink.writer_guid)}
                 if other or not self.sink.matched:
                     raise SafetyFaultError(f"DDS ownership/receiver lost: {sorted(other)}")
@@ -298,6 +316,7 @@ class ControlSession:
 
     def status(self):
         return {"ready": self._ready and not self._stop.is_set(), "error": self.error,
+                "lifetime": "agent" if self.agent_lease is not None else "timed",
                 "recovery": self.recovery, "frames_sent": self.sent,
                 "max_writer_gap_ms": self.max_gap_s * 1000,
                 "remaining_s": max(0.0, self._expires - self.clock())}

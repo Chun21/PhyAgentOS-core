@@ -421,7 +421,7 @@ def _make_forge_verifier(config: Config, provider):
     )
 
 
-def _make_forge_components(config: Config, provider, *, physical_control: bool = False):
+def _make_forge_components(config: Config, provider, *, physical_control: bool = False, control_lease=None):
     """Build dynamic Agent components from the single managed Skill runtime."""
     from PhyAgentOS.forge.binding import ForgeSkillBindingResolver
     from PhyAgentOS.forge.task import AgentTaskCoordinator
@@ -432,7 +432,7 @@ def _make_forge_components(config: Config, provider, *, physical_control: bool =
         DynamicRuntimeSet,
         discover_active_runtime,
     )
-    from PhyAgentOS.skill_runtime.manager import RuntimeManager
+    from PhyAgentOS.skill_runtime.manager import RuntimeManager, RuntimeManagerError
     from PhyAgentOS.skill_runtime.state import RuntimeStateStore
 
     catalog = SkillCatalog()
@@ -443,21 +443,21 @@ def _make_forge_components(config: Config, provider, *, physical_control: bool =
         state_store=state_store,
         manager=manager,
     )
-    physical_control = physical_control or os.environ.get("PAOS_PHYSICAL_CONTROL") == "1"
-    if active_runtime is None and physical_control:
+    if physical_control:
         # The G1_D profile is the robot's native PAOS entry point. Start its
         # supervised Runtime before constructing Agent tools so activation and
         # task binding see the same live gateway.
         try:
             catalog.get("g1d-manipulation")
-        except Exception:
-            pass
+        except LookupError:
+            _skill_runtime_error(RuntimeManagerError("Install g1d-manipulation before using --physical"))
         else:
-            from PhyAgentOS.skill_runtime.manager import RuntimeManagerError
-
             try:
-                manager.start("g1d-manipulation", "real-g1d",
-                              operator_confirmed=True, max_arm_excursion_rad=1.5)
+                started = manager.start("g1d-manipulation", "real-g1d",
+                              operator_confirmed=True, max_arm_excursion_rad=1.5,
+                              agent_lease=control_lease.path if control_lease else None)
+                if control_lease is not None:
+                    control_lease.runtime = (manager, started)
             except RuntimeManagerError as error:
                 _skill_runtime_error(error)
             active_runtime = discover_active_runtime(
@@ -745,6 +745,46 @@ def agent(
     physical: bool = typer.Option(False, "--physical", help="Enable supervised physical robot control for this session"),
 ):
     """Interact with the agent directly."""
+    from contextlib import nullcontext
+
+    from PhyAgentOS.config.paths import get_skill_runtime_state_dir
+    from PhyAgentOS.skill_runtime.agent_lease import AgentControlLease
+
+    loaded = _load_command_config(config, workspace)
+    physical = physical or os.environ.get("PAOS_PHYSICAL_CONTROL") == "1"
+    lifetime = AgentControlLease(get_skill_runtime_state_dir() / "agent-leases") if physical else nullcontext()
+    with lifetime as lease:
+        try:
+            _run_agent(loaded, message=message, session_id=session_id, markdown=markdown,
+                       logs=logs, physical=physical, control_lease=lease)
+        finally:
+            if lease is not None:
+                lease.close()
+                _finish_physical_runtime(lease)
+
+
+def _finish_physical_runtime(lease):
+    """Allow the controller to recover before reconciling managed lifecycle state."""
+    import time
+
+    if lease.runtime is None:
+        return
+    manager, started = lease.runtime
+    try:
+        deadline = time.monotonic() + 15
+        while manager._flow_running(started.flow_name):
+            if time.monotonic() >= deadline:
+                console.print("[yellow]Control lease revoked; Runtime shutdown is still pending. Check Skill logs.[/yellow]")
+                return
+            time.sleep(.2)
+        current = manager.state_store.load(started.skill_name)
+        if current and current.runtime_instance_id == started.runtime_instance_id:
+            manager.stop(started.skill_name)
+    except Exception as error:
+        console.print(f"[yellow]Control lease revoked; Runtime reconciliation: {error}[/yellow]")
+
+
+def _run_agent(config, *, message, session_id, markdown, logs, physical, control_lease):
     from loguru import logger
 
     from PhyAgentOS.agent.loop import AgentLoop
@@ -753,7 +793,6 @@ def agent(
     from PhyAgentOS.cron.service import CronService
     from PhyAgentOS.embodiment_registry import EmbodimentRegistry
 
-    config = _load_command_config(config, workspace)
     _print_deprecated_memory_window_notice(config)
     registry = EmbodimentRegistry(config)
     if registry.is_fleet:
@@ -769,7 +808,7 @@ def agent(
         forge_tool_invocation_ids,
         forge_task_coordinator,
         runtime_availability_provider,
-    ) = _make_forge_components(config, provider, physical_control=physical)
+    ) = _make_forge_components(config, provider, physical_control=physical, control_lease=control_lease)
 
     # Create cron service for tool usage (no callback needed for CLI unless running)
     cron_store_path = get_cron_dir() / "jobs.json"
@@ -828,6 +867,8 @@ def agent(
                     response = await agent_loop.process_direct(message, session_id, on_progress=_cli_progress)
                 _print_agent_response(response, render_markdown=markdown)
             finally:
+                if control_lease is not None:
+                    control_lease.close()
                 agent_loop.stop()
                 await agent_loop.close_mcp()
 
@@ -844,6 +885,8 @@ def agent(
             cli_channel, cli_chat_id = "cli", session_id
 
         def _handle_signal(signum, frame):
+            if control_lease is not None:
+                control_lease.close()
             sig_name = signal.Signals(signum).name
             _restore_terminal()
             console.print(f"\nReceived {sig_name}, goodbye!")
@@ -930,6 +973,8 @@ def agent(
                         console.print("\nGoodbye!")
                         break
             finally:
+                if control_lease is not None:
+                    control_lease.close()
                 agent_loop.stop()
                 outbound_task.cancel()
                 await asyncio.gather(

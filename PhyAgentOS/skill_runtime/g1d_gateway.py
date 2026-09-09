@@ -298,6 +298,9 @@ def main() -> None:
                         help="explicit supervised native control session; releases factory ai mode")
     parser.add_argument("--session-seconds", type=float, default=300,
                         help="bounded native operator session, 10..1800 seconds")
+    parser.add_argument("--agent-lease", type=Path,
+                        default=os.environ.get("PAOS_G1D_AGENT_LEASE") or None,
+                        help="local PAOS CLI heartbeat file; replaces the fixed session deadline")
     parser.add_argument("--max-arm-excursion-rad", type=float,
                         help="native session joint excursion, capped at 1.5 rad")
     parser.add_argument("--controller-lock", type=Path,
@@ -310,6 +313,8 @@ def main() -> None:
         args.max_arm_excursion_rad = float(os.environ.get("PAOS_G1D_MAX_ARM_EXCURSION_RAD", "1.5"))
     if args.operator_confirmed and args.authority_socket:
         parser.error("choose native operator session or external authority, not both")
+    if args.agent_lease and not args.operator_confirmed:
+        parser.error("agent lease requires operator-confirmed native control")
     if args.max_arm_excursion_rad is not None and not args.operator_confirmed:
         parser.error("excursion override requires operator-confirmed native control")
     if any((args.control_profile, args.authority_socket, args.journal, args.operator_confirmed)):
@@ -370,7 +375,8 @@ def main() -> None:
             session = ControlSession(
                 config=config, source=source,
                 sink=sink.arm, motion=MotionSwitcher(domain), discovery=LowCmdDiscovery(domain),
-                lock_path=args.controller_lock, duration_s=args.session_seconds)
+                lock_path=args.controller_lock, duration_s=args.session_seconds,
+                agent_lease=args.agent_lease)
             sink = session
             ownership = session.require
         else:

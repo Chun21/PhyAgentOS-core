@@ -59,6 +59,7 @@ def build(gateway_archive: Path | None = None) -> Path:
         "g1d_dex1_bridge",
         "g1d_control_loop",
         "g1d_control_session",
+        "agent_lease",
         "g1d_motion_switcher",
         "g1d_action_endpoint",
         "g1d_authority",
@@ -141,15 +142,16 @@ def build(gateway_archive: Path | None = None) -> Path:
     executable = buffer.getvalue()
     (BUNDLE / "artifacts/g1d-runtime").write_bytes(executable)
     (BUNDLE / "artifacts/g1d-runtime").chmod(0o755)
-    archive_path = BUNDLE / "artifacts/g1d-runtime-0.3.0.tar.gz"
+    manifest_path = BUNDLE / "skill.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    node_version = manifest["artifacts"]["nodes"]["g1d-runtime"]["version"]
+    archive_path = BUNDLE / f"artifacts/g1d-runtime-{node_version}.tar.gz"
     with archive_path.open("wb") as output:
         with gzip.GzipFile(fileobj=output, mode="wb", filename="", mtime=0) as zipped:
             with tarfile.open(fileobj=zipped, mode="w") as archive:
                 member = tarfile.TarInfo("g1d-runtime")
                 member.size, member.mode, member.mtime = len(executable), 0o755, 0
                 archive.addfile(member, io.BytesIO(executable))
-    manifest_path = BUNDLE / "skill.yaml"
-    manifest = yaml.safe_load(manifest_path.read_text())
     manifest["artifacts"]["nodes"]["g1d-runtime"]["sha256"] = hashlib.sha256(
         archive_path.read_bytes()
     ).hexdigest()
