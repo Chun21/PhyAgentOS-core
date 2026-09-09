@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 from PhyAgentOS.skill_runtime.g1d_adapter import (
     AdapterError,
     G1DAdapter,
@@ -44,6 +46,10 @@ class G1DReadOnlyRuntime:
         if profile != "real-g1d":
             raise ValueError(f"unknown profile: {profile}")
         self.root = bundle_root
+        manifest = yaml.safe_load((bundle_root / "skill.yaml").read_text())
+        if not isinstance(manifest, dict) or not isinstance(manifest.get("version"), str):
+            raise ValueError("Skill manifest requires a version")
+        self.skill_version = manifest["version"]
         self.clock = clock
         self.source = source
         self.instance_id = f"g1d-{uuid.uuid4().hex}"
@@ -112,7 +118,7 @@ class G1DReadOnlyRuntime:
         self.planner = G1DPlanner(
             kinematics=self.kinematics,
             clock=clock,
-            skill_version="0.3.0",
+            skill_version=self.skill_version,
             runtime_instance_id=self.instance_id,
             profile_digest=digest_json({"profile": self.config, "tools": self.tools}),
             joint_limits_rad=limits,
@@ -148,7 +154,7 @@ class G1DReadOnlyRuntime:
         with self.lock:
             result: dict[str, Any] = {
                 "runtime_instance_id": self.instance_id,
-                "skill_version": "0.3.0",
+                "skill_version": self.skill_version,
                 "runtime_ready": True,
                 "action_ready": False,
                 "safety_gate": "state_unavailable",
@@ -197,15 +203,15 @@ class G1DReadOnlyRuntime:
                 raise PlannerError(f"valid planning state required: {state['safety_gate']}")
             assert self._positions is not None
             self.kinematics.set_reference_q(self._positions[15:29])
-            plan = self.planner.plan_pose(
-                left=arguments["left"],
-                right=arguments["right"],
-                current_q=self._positions,
-            )
+            if "gesture_arm" in arguments and arguments.get("gesture") != "wave":
+                raise PlannerError("gesture_arm requires gesture=wave")
+            targets = dict(left=arguments["left"], right=arguments["right"], current_q=self._positions)
+            if arguments.get("gesture") == "wave":
+                plan = self.planner.plan_wave(**targets, arm=arguments.get("gesture_arm", "right"))
+            else:
+                plan = self.planner.plan_pose(**targets)
             if not plan.checks_passed:
                 raise PlannerError("bilateral plan validation failed")
-            if arguments.get("gesture") == "wave":
-                plan = self.planner.add_wave(plan)
             if "deadline_s" in arguments and plan.trajectory.duration_s > arguments["deadline_s"]:
                 raise PlannerError("trajectory exceeds requested deadline")
             binding = asdict(plan.binding)

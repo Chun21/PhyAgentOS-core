@@ -95,7 +95,8 @@ async def run(args):
         session_key = "supervised-g1d-" + uuid4().hex
         return_report = getattr(args, "return_report", None)
         wave = getattr(args, "wave", False)
-        description = ("Continuous right-arm greeting and return" if wave else
+        wave_arm = getattr(args, "wave_arm", "right")
+        description = (f"Continuous {wave_arm}-arm greeting and return" if wave else
                        "Return both end effectors to recorded pre-motion poses" if return_report
                        else "Move both unloaded end effectors 1 cm along fixed-base X and return")
         activation.begin_turn(session_key, description)
@@ -111,30 +112,27 @@ async def run(args):
             report["before"] = before
             if wave:
                 target = copy.deepcopy(before["end_effector_poses"])
-                # FK of a bent-elbow greeting posture in the pinned fixed-base
-                # model; the actual joint target is still solved by UniRobot IK.
-                target["right"]["position_m"] = [.4150860498, -.1605259698, 1.0519048126]
-                target["right"]["orientation_xyzw"] = [
-                    -.1780572594, -.3440155024, .0115776973, .9218540576]
                 target["gesture"] = "wave"
+                target["gesture_arm"] = wave_arm
                 report["observations"] = []
                 report["wave"] = await execute(coordinator, task.task_id, target, report["observations"])
                 after = outputs(await coordinator.invoke_query(task.task_id, PREFIX + "state", {}))
                 report["after"] = after
-                wrist = [s["right_arm"]["joint_positions_rad"][6] for s in report["observations"]]
+                report["wave_arm"] = wave_arm
+                wrist = [s[f"{wave_arm}_arm"]["joint_positions_rad"][6] for s in report["observations"]]
                 report["wrist_range_rad"] = max(wrist) - min(wrist)
-                report["peak_right_height_m"] = max(
-                    s["end_effector_poses"]["right"]["position_m"][2]
+                report[f"peak_{wave_arm}_height_m"] = max(
+                    s["end_effector_poses"][wave_arm]["position_m"][2]
                     for s in report["observations"])
-                report["right_lift_m"] = (report["peak_right_height_m"]
-                    - before["end_effector_poses"]["right"]["position_m"][2])
+                report[f"{wave_arm}_lift_m"] = (report[f"peak_{wave_arm}_height_m"]
+                    - before["end_effector_poses"][wave_arm]["position_m"][2])
                 report["return_error_m"] = {
                     side: math.dist(after["end_effector_poses"][side]["position_m"],
                                     before["end_effector_poses"][side]["position_m"])
                     for side in ("left", "right")
                 }
                 report["accepted"] = (report["wrist_range_rad"] >= .4
-                    and report["peak_right_height_m"] >= 1.0) and all(
+                    and report[f"peak_{wave_arm}_height_m"] >= 1.0) and all(
                     error <= .005 for error in report["return_error_m"].values())
                 final = await coordinator.finalize_task(task.task_id)
                 report["agent_task_status"] = final.status.value
@@ -209,7 +207,9 @@ def main():
     parser.add_argument("--return-report", type=Path,
         help="return to poses from a report with a known successful outbound Action")
     parser.add_argument("--wave", action="store_true",
-        help="one continuous right-arm greeting with observed wrist movement and return")
+        help="one continuous greeting with observed wrist movement and return")
+    parser.add_argument("--wave-arm", choices=("left", "right"), default="right",
+        help="arm used for --wave (robot's own left/right)")
     asyncio.run(run(parser.parse_args()))
 
 

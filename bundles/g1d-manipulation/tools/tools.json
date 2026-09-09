@@ -4,7 +4,7 @@
     "semantics": "query",
     "endpoint_id": "g1d.dual_arm",
     "operation": "plan_pose",
-    "description": "Validate and plan a bilateral arm target without motion.",
+    "description": "Plan bilateral arm poses without motion. For a raised greeting use gesture=wave and gesture_arm=left or right (default right), with both observed poses as input. The Runtime solves the greeting with IK, holds the other arm, waves continuously and returns to the starting joints.",
     "max_concurrency": 8,
     "robot_frame_profile": {
       "base_frame": "unirobot_g1d_fixed_base",
@@ -36,8 +36,20 @@
         "gesture": {
           "type": "string",
           "enum": ["wave"]
+        },
+        "gesture_arm": {
+          "type": "string",
+          "enum": ["left", "right"],
+          "default": "right",
+          "description": "Arm performing gesture=wave; the other arm holds its measured joints."
         }
       },
+      "allOf": [
+        {
+          "if": {"required": ["gesture_arm"]},
+          "then": {"required": ["gesture"], "properties": {"gesture": {"const": "wave"}}}
+        }
+      ],
       "$defs": {
         "target": {
           "type": "object",

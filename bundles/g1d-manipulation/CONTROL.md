@@ -56,9 +56,18 @@ python scripts/g1d_agent_smoke.py --skills-root bundles
 python scripts/g1d_agent_smoke.py --skills-root bundles --execute
 ```
 
-For a raised right-arm greeting, start the supervised session with
+In the TUI, request `让左臂抬起来连续挥手，然后回到原位，右臂保持不动` or the
+corresponding right-arm greeting. `plan_pose` accepts `gesture: "wave"` and
+`gesture_arm: "left" | "right"` (default right). Pass the current bilateral poses;
+the Runtime supplies the raised target, solves IK, and preserves the other arm's
+observed joints throughout. These are the robot's own left and right sides.
+
+For a standalone diagnostic right-arm greeting, start the supervised session with
 `--max-arm-excursion-rad 1.5 --session-seconds 60`, then run
 `python scripts/g1d_agent_smoke.py --skills-root bundles --wave --execute`.
+Add `--wave-arm left` to validate the left-arm greeting. Left uses the sagittal
+mirror of the right Cartesian target with its own IK and joint limits; the Agent
+does not mirror joint commands.
 The target is a bent-elbow pose at approximately `(0.415, -0.161, 1.052)` metres
 in `unirobot_g1d_fixed_base`, with the end effector directed upward. These are model
 coordinates, not height above the physical floor. The pinned IK solves the posture;

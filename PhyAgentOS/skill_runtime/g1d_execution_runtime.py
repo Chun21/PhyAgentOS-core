@@ -125,7 +125,7 @@ class G1DExecutionRuntime(G1DReadOnlyRuntime):
         self.planner = G1DPlanner(
             kinematics=self.kinematics,
             clock=clock,
-            skill_version="0.3.0",
+            skill_version=self.skill_version,
             runtime_instance_id=self.instance_id,
             profile_digest=profile_digest,
             max_joint_velocity_rad_per_s=self.config["max_joint_velocity_rad_per_s"],
@@ -141,7 +141,7 @@ class G1DExecutionRuntime(G1DReadOnlyRuntime):
             planner=self.planner,
             clock=clock,
             sink=sink,
-            skill_version="0.3.0",
+            skill_version=self.skill_version,
             runtime_instance_id=self.instance_id,
             profile_digest=profile_digest,
             journal_path=journal_path,

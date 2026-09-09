@@ -2,14 +2,24 @@
 
 Use this Skill to inspect Unitree G1_D arm-pair state and plan and execute bilateral poses.
 The `real-g1d` profile starts read-only by default. An operator may explicitly start a
-bounded control session using `CONTROL.md`. Require `action_ready` before execution;
+control session using `paos agent --physical` (lifetime follows the TUI; see `CONTROL.md`). Require `action_ready` before execution;
 the four Tools remain discoverable when execution is unavailable.
 
 For a user request to wave, use one continuous `plan_pose` call with the current
-observed bilateral poses, set `gesture` to `wave`, and then submit its returned
+observed bilateral poses, set `gesture` to `wave`, select `gesture_arm: "left"`
+for 左臂/左手 or `gesture_arm: "right"` for 右臂/右手, and then submit its returned
 `plan_id` to `execute_pose`. Do not invent joint values or call the low-level DDS
-tools directly. A wave raises the right arm into a bent-elbow greeting posture,
-oscillates the wrist continuously, and returns to the observed starting joints.
+tools directly. If no arm is requested, default to right. The Runtime supplies the
+selected arm's greeting target and solves IK; the Agent does not invent greeting
+coordinates. One continuous trajectory raises that arm, oscillates its wrist,
+and returns to the observed starting joints. The other arm holds its measured
+joints throughout. Left/right refer to the robot's own sides, not the observer's.
+
+Other supported motions use `plan_pose` without `gesture`: for example move the
+left hand up 5 cm by adding 0.05 to its observed position Z while keeping the right
+pose unchanged. Both arm pose targets are required. Arbitrary tasks still need
+reachable targets, valid plans and readiness; do not claim every requested gesture
+is a built-in preset. Simultaneous two-arm waving is not currently a preset.
 
 Before an Action, inspect the relevant Tool context and bind the call to the current AgentTask.
 Both arm target poses are required. Every pose supplies an explicit frame, positions in metres,

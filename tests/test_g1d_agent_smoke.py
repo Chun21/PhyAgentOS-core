@@ -10,8 +10,8 @@ import httpx
 import pytest
 
 
-@pytest.mark.parametrize("wave", [False, True])
-def test_agent_activation_bound_task_out_and_back(tmp_path, monkeypatch, wave):
+@pytest.mark.parametrize("wave_arm", [None, "right", "left"])
+def test_agent_activation_bound_task_out_and_back(tmp_path, monkeypatch, wave_arm):
     import PhyAgentOS.skill_runtime  # noqa: F401 - load source package before zipapp path
 
     bundle = Path(__file__).parents[1] / "bundles/g1d-manipulation"
@@ -51,7 +51,7 @@ def test_agent_activation_bound_task_out_and_back(tmp_path, monkeypatch, wave):
     monkeypatch.setattr(g1d_agent_smoke, "ForgeToolClient",
         lambda url: ForgeToolClient(url, transport=httpx.ASGITransport(app=app)))
     args = SimpleNamespace(workspace=tmp_path / "agent", skills_root=bundle.parent,
-        gateway="http://testserver", execute=True, wave=wave)
+        gateway="http://testserver", execute=True, wave=wave_arm is not None, wave_arm=wave_arm)
     with TestClient(app):
         try:
             asyncio.run(g1d_agent_smoke.run(args))
@@ -65,10 +65,16 @@ def test_agent_activation_bound_task_out_and_back(tmp_path, monkeypatch, wave):
     assert report["accepted"], report
     assert report["agent_task_status"] == "succeeded"
     assert sink.samples
-    if wave:
+    if wave_arm:
         assert report["wrist_range_rad"] > .6
-        assert report["right_lift_m"] > .3
-        assert report["peak_right_height_m"] >= 1.0
+        assert report[f"{wave_arm}_lift_m"] > .3
+        assert report[f"peak_{wave_arm}_height_m"] >= 1.0
         motion = [i for i, sample in enumerate(sink.samples) if sample.phase.value == "motion"]
         assert motion == list(range(motion[0], motion[-1] + 1))
-        assert all(abs(sample.frame.motor_cmd[28].dq) <= .5 + 1e-9 for sample in sink.samples)
+        wrist = 28 if wave_arm == "right" else 21
+        held_side = "left" if wave_arm == "right" else "right"
+        held_start = 15 if wave_arm == "right" else 22
+        observed = report["before"][f"{held_side}_arm"]["joint_positions_rad"]
+        assert all(abs(sample.frame.motor_cmd[wrist].dq) <= .5 + 1e-9 for sample in sink.samples)
+        for sample in sink.samples:
+            assert [m.q for m in sample.frame.motor_cmd[held_start:held_start+7]] == pytest.approx(observed)

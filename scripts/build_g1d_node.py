@@ -80,6 +80,12 @@ def build(gateway_archive: Path | None = None) -> Path:
             files[str(path.relative_to(ROOT))] = path.read_bytes()
     for path in [BUNDLE / "tools/tools.json", BUNDLE / "profiles/real-g1d/kinematics.json"]:
         files[f"bundle/{path.relative_to(BUNDLE)}"] = path.read_bytes()
+    # Keep the standalone fallback version aligned without embedding a
+    # self-referential archive digest from the complete Skill lock.
+    skill_metadata = yaml.safe_load((BUNDLE / "skill.yaml").read_text())
+    files["bundle/skill.yaml"] = yaml.safe_dump({
+        "name": skill_metadata["name"], "version": skill_metadata["version"]
+    }).encode()
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
         for member in archive:
             parts = Path(member.name).parts[1:]

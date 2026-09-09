@@ -579,18 +579,46 @@ class G1DPlanner:
         self._evict_expired(now)
         return plan
 
-    def add_wave(self, plan: PosePlan) -> PosePlan:
-        """Raise to the IK pose, wave the right wrist, and return observed joints."""
+    def plan_wave(self, *, left: Mapping[str, Any], right: Mapping[str, Any],
+                  current_q: Sequence[float], arm: str = "right") -> PosePlan:
+        """Solve a greeting in the pinned UniRobot frame, keeping the other arm still."""
+        if arm not in ("left", "right"):
+            raise PoseValidationError("wave arm must be left or right")
+        poses = {"left": validate_arm_pose(left), "right": validate_arm_pose(right)}
+        if any(p.frame_id != "unirobot_g1d_fixed_base" for p in poses.values()):
+            raise PoseValidationError("wave requires unirobot_g1d_fixed_base")
+        if any(p.dex1_opening is not None for p in poses.values()):
+            raise PoseValidationError("wave is arm-only")
+        # Mirror the verified right greeting about the sagittal plane. For an
+        # axial rotation vector this flips quaternion x/z, not y. IK still
+        # solves each arm with its own asymmetric joint limits and current seed.
+        sign = 1 if arm == "right" else -1
+        target = {
+            "frame_id": "unirobot_g1d_fixed_base",
+            "position_m": [.4150860498, sign * -.1605259698, 1.0519048126],
+            "orientation_xyzw": [sign * -.1780572594, -.3440155024,
+                                  sign * .0115776973, .9218540576],
+        }
+        targets = {"left": left, "right": right, arm: target}
+        plan = self.plan_pose(**targets, current_q=current_q)
+        return self.add_wave(plan, arm=arm)
+
+    def add_wave(self, plan: PosePlan, *, arm: str = "right") -> PosePlan:
+        """Raise the selected arm, wave its wrist, and return observed joints."""
+        if arm not in ("left", "right"):
+            raise PoseValidationError("wave arm must be left or right")
         if plan.start_q is None or not plan.checks_passed:
             raise PoseValidationError("wave needs a validated plan and observed start")
         if any(p.dex1_opening is not None for p in plan.targets or ()):
             raise PoseValidationError("wave is arm-only")
         start = plan.start_q
-        raised = (*start[:7], *plan.joint_solution.right_q)
+        raised = ((*start[:7], *plan.joint_solution.right_q) if arm == "right"
+                  else (*plan.joint_solution.left_q, *start[7:]))
+        wrist_index = 13 if arm == "right" else 6
         points = [start, raised]
         for offset in (.35, -.35, .35, -.35, 0.0):
             q = list(raised)
-            q[13] += offset
+            q[wrist_index] += offset if arm == "right" else -offset
             self._validate_solution(JointSolution(tuple(q[:7]), tuple(q[7:])))
             points.append(tuple(q))
         points.append(start)
@@ -609,7 +637,7 @@ class G1DPlanner:
             joint_solution=JointSolution(start[:7], start[7:]), targets=(targets[0], targets[1]),
             joint_path=path,
             binding=replace(plan.binding, target_digest=digest_json({
-                "pose": plan.binding.target_digest, "gesture": "right_wave_v1",
+                "pose": plan.binding.target_digest, "gesture": f"{arm}_wave_v1",
                 "points": points, "durations": durations})),
             trajectory=replace(plan.trajectory, duration_s=path.duration_s,
                 max_velocity=self._max_joint_velocity_rad_per_s,

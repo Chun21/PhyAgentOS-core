@@ -1,6 +1,6 @@
 manifest_version: 2
 name: g1d-manipulation
-version: 0.3.1
+version: 0.3.2
 description: Supervised visual-free dual-arm manipulation for Unitree G1_D.
 skill_document: SKILL.md
 gateway_url: http://127.0.0.1:19083
@@ -26,10 +26,10 @@ artifacts:
   resolver: local
   nodes:
     g1d-runtime:
-      artifact_id: g1d-runtime-0.3.1-linux-aarch64
-      version: 0.3.1
+      artifact_id: g1d-runtime-0.3.2-linux-aarch64
+      version: 0.3.2
       platform: linux
       arch: aarch64
       artifact_type: executable_tar_gz
       entrypoint: g1d-runtime
-      sha256: 553e610cf55e2c5803a50a0ebd7b982e8d48b9e1ca5eaaeca30b05c3249a0712
+      sha256: c47b531542dd3a931b90c144394cb8123bae3c60683a08b4966a0935efb6901b
