@@ -101,6 +101,28 @@ class ForgeSkillBindingResolver:
             raise ForgeSkillBindingError("no ready Forge Skill runtime is active")
         return runtime
 
+    def current_context(self) -> str:
+        """Describe the current managed binding, separately from live readiness."""
+        runtime = self.runtime_registry.current()
+        if runtime is None:
+            return "No managed Forge Runtime is currently selected."
+        identity = (
+            f"Current managed Skill: {runtime.skill_name}; version: {runtime.skill_version}; "
+            f"profile: {runtime.profile}; runtime_instance_id: {runtime.runtime_instance_id}."
+        )
+        manifest = self.catalog.get(runtime.skill_name)
+        if manifest.version != runtime.skill_version:
+            return identity + " Installed Skill version differs; refresh the Runtime before activation."
+        document = manifest.resolve_bundle_path(manifest.skill_document).read_text(encoding="utf-8")
+        return (
+            identity + "\nThis identifies the managed Runtime, not live action readiness. "
+            "Previous conversation/tool results describe their historical runtime and may be stale. "
+            "Before claiming a capability is unavailable, activate this Skill and inspect the "
+            "current ToolSpec/context. Do not claim to have rechecked without a new tool result. "
+            "The instructions below do not replace Skill activation or AgentTask binding.\n"
+            f"Current installed Skill instructions ({manifest.skill_document}):\n{document}"
+        )
+
     async def preview(self, skill_name: str) -> ForgeSkillBindingCandidate:
         runtime = self._runtime()
         if runtime.skill_name != skill_name:

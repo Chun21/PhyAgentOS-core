@@ -84,6 +84,13 @@ Skills with available="false" cannot be activated until their declared dependenc
 
 {skills_summary}""")
 
+        if self.forge_context_provider is not None:
+            parts.append(
+                "# Current Forge Runtime\n\n"
+                "Use this current context when historical conversation or memory describes an "
+                "older runtime. Query live tools for readiness before acting.\n\n"
+                + self.forge_context_provider()
+            )
         return "\n\n---\n\n".join(parts)
 
     def _get_identity(self) -> str:
@@ -114,9 +121,7 @@ Skills with available="false" cannot be activated until their declared dependenc
                 "- Never invent tool IDs, Gateway URLs, caller IDs, or readiness.\n"
                 "- Query live context before the first invocation and after readiness changes.\n"
                 "- Gateway success is an execution fact; finalize the AgentTask for user-level "
-                "success.\n\n"
-                "## Forge Execution\n"
-                + self.forge_context_provider()
+                "success.\n"
             )
 
         return f"""# PhyAgentOS 🍞

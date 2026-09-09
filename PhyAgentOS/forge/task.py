@@ -1062,11 +1062,17 @@ class AgentTaskCoordinator:
         return self.store.get(task.task_id)
 
     def capabilities_summary(self) -> str:
-        return (
+        summary = (
             "Forge execution uses only an activated Skill, a frozen AgentTask binding, and the "
             "Gateway Tool API. Query is read-only; Action admission is not task success; "
             "task-owned Sessions must be stopped before finalization."
         )
+        if self.binding_resolver is not None:
+            try:
+                summary += "\n\n" + self.binding_resolver.current_context()
+            except (OSError, ValueError, RuntimeError, LookupError):
+                summary += "\nCurrent Runtime context could not be loaded; inspect live Forge tools before judging capability."
+        return summary
 
     def _require_executable(self, task_id: str) -> AgentTaskRecord:
         task = self.store.get(task_id)
