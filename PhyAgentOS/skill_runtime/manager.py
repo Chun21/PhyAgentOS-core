@@ -139,10 +139,12 @@ class RuntimeManager:
             self._run_start_hook(manifest, profile_name)
             self._ensure_dora_up(manifest, profile, binary_root)
             launched = True
+            launch_log = self.logs_root / f"{flow_name}-dora.log"
+            log_offset = launch_log.stat().st_size if launch_log.exists() else 0
             self._start_flow(flow_name, manifest, profile, binary_root,
                              operator_confirmed=operator_confirmed,
                              max_arm_excursion_rad=max_arm_excursion_rad)
-            self._wait_until_ready(manifest, flow_name)
+            self._wait_until_ready(manifest, flow_name, log_offset=log_offset)
             snapshot = self._gateway_snapshot(manifest) or {}
             data = snapshot.get("data") if isinstance(snapshot.get("data"), dict) else {}
             identity = data.get("gateway_identity") or data.get("gateway_id")
@@ -372,7 +374,6 @@ class RuntimeManager:
         skill: SkillManifest,
         profile: RuntimeProfile,
         binary_root: Path,
-        *, operator_confirmed: bool = False, max_arm_excursion_rad: float | None = None,
     ) -> None:
         dora = shutil.which("dora")
         assert dora is not None
@@ -428,14 +429,14 @@ class RuntimeManager:
             "PAOS_SKILL_NAME": skill.name,
             "PAOS_SKILL_VERSION": skill.version,
         }
-        if skill.name == "g1d-manipulation" and operator_confirmed:
+        if skill.name == "g1d-manipulation":
             env.update({
-                "PAOS_G1D_CONTROL_ENABLED": "1",
-                "PAOS_G1D_OPERATOR_CONFIRMED": "1",
+                "PAOS_G1D_CONTROL_ENABLED": "1" if operator_confirmed else "0",
                 "PAOS_G1D_CONTROL_PROFILE": str(skill.bundle_root / "profiles/real-g1d/control.json"),
                 "PAOS_G1D_JOURNAL": str(skill.bundle_root / "run/actions.sqlite"),
                 "PAOS_G1D_PORT": "19083",
-                "PAOS_G1D_MAX_ARM_EXCURSION_RAD": str(max_arm_excursion_rad or 1.5),
+                "PAOS_G1D_MAX_ARM_EXCURSION_RAD": str(
+                    1.5 if max_arm_excursion_rad is None else max_arm_excursion_rad),
             })
         self.logs_root.mkdir(parents=True, exist_ok=True)
         launch_log = self.logs_root / f"{flow_name}-dora.log"
@@ -498,10 +499,27 @@ class RuntimeManager:
 
         return has_running(data)
 
-    def _wait_until_ready(self, manifest: SkillManifest, flow_name: str) -> None:
+    def _startup_failure(self, flow_name: str, log_offset: int) -> str | None:
+        """Return a node's control rejection from this launch, not an older run."""
+        path = self.logs_root / f"{flow_name}-dora.log"
+        try:
+            with path.open("rb") as log:
+                log.seek(max(log_offset, path.stat().st_size - 16384))
+                lines = log.read(16384).decode("utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            if "SafetyFaultError:" in line:
+                return line.split("SafetyFaultError:", 1)[1].strip()[:1000]
+        return None
+
+    def _wait_until_ready(self, manifest: SkillManifest, flow_name: str, *, log_offset: int = 0) -> None:
         deadline = time.monotonic() + self.health_timeout_s
         last_reason = "Gateway GET /tools is unavailable"
         while time.monotonic() < deadline:
+            failure = self._startup_failure(flow_name, log_offset)
+            if failure:
+                raise RuntimeManagerError(f"Runtime control startup rejected: {failure}")
             if not self._flow_running(flow_name):
                 last_reason = "Dora flow is not running"
             elif self._gateway_snapshot(manifest) is None:

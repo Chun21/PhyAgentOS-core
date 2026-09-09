@@ -453,8 +453,13 @@ def _make_forge_components(config: Config, provider, *, physical_control: bool =
         except Exception:
             pass
         else:
-            manager.start("g1d-manipulation", "real-g1d",
-                          operator_confirmed=True, max_arm_excursion_rad=1.5)
+            from PhyAgentOS.skill_runtime.manager import RuntimeManagerError
+
+            try:
+                manager.start("g1d-manipulation", "real-g1d",
+                              operator_confirmed=True, max_arm_excursion_rad=1.5)
+            except RuntimeManagerError as error:
+                _skill_runtime_error(error)
             active_runtime = discover_active_runtime(
                 catalog=catalog, state_store=state_store, manager=manager)
     runtime_registry = ActiveRuntimeRegistry(
@@ -983,6 +988,20 @@ def skill_search(
     console.print(table)
 
 
+def _bundle_payload_matches(installed: Path, incoming: Path) -> bool:
+    """Compare packaged files, including assets outside the parsed manifest."""
+    from PhyAgentOS.skill_runtime.archive import sha256_file
+
+    for source in incoming.rglob("*"):
+        if source.is_file():
+            target = installed / source.relative_to(incoming)
+            if (not target.is_file() or target.is_symlink()
+                    or sha256_file(target) != sha256_file(source)
+                    or (target.stat().st_mode & 0o111) != (source.stat().st_mode & 0o111)):
+                return False
+    return True
+
+
 def _install_skill_bundle(
     archive: Path,
     *,
@@ -1050,7 +1069,7 @@ def _install_skill_bundle(
                     local = SkillCatalog().get(preview.name)
                 except SkillNotFoundError:
                     local = None
-                if local == preview:
+                if local == preview and _bundle_payload_matches(local.bundle_root, preview.bundle_root):
                     if missing_nodes:
                         names = ", ".join(node_id for node_id, _ in missing_nodes)
                         console.print(
