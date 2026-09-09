@@ -1,7 +1,7 @@
 # Installed read-only G1_D Runtime
 
 This #17 slice starts the actual Forge Tool Gateway with an embedded
-ToolEndpoint, the internal DDS bridge, and the real Pinocchio planner.
+ToolEndpoint, the internal DDS bridge, and the UniRobot-aligned CasADi/IPOPT planner.
 Exactly four Tools are exposed. `execute_pose` ends with `action_not_ready`;
 `stop` ends with `no_active_operation` (`already_stopped` in error details).
 These are pre-effect rejections; no operation is admitted to physical execution.
@@ -14,11 +14,11 @@ After installing the native CycloneDDS build, set these variables in the
 activated conda environment before launching the Runtime or Dora:
 
 ```sh
-export CYCLONEDDS_HOME="$CONDA_PREFIX/g1d-dds"
+export CYCLONEDDS_HOME="$CONDA_PREFIX/g1d-dds-0.10.2"
 export LD_LIBRARY_PATH="$CYCLONEDDS_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
-The Python extension requires `libddsc.so.11` at runtime; `pip check` alone
+The Python extension requires `libddsc.so.0` at runtime; `pip check` alone
 does not validate the dynamic loader path. `scripts/g1d_readonly.sh` applies
 these settings for a foreground diagnostic launch.
 The dependency lock targets CPython 3.12 and glibc 2.31. The Node is a
@@ -42,7 +42,8 @@ URDF and license notices. It needs no source checkout or implementation override
    in `dependencies/cache`. The conda explicit lock downloads its pinned
    Python/build-toolchain packages from conda-forge. Source Bundles omit the
    cache; omit `--offline` to download and SHA-256-verify those artifacts first.
-   CycloneDDS 11.0.1 has no upstream aarch64 Python wheel, so the installer
+   CycloneDDS is pinned to 0.10.2 for both its C core and Python binding.
+   This version has no upstream CPython 3.12 wheel, so the installer
    builds its pinned C core and Python binding locally using the locked
    toolchain. The installed conda environment must be rebuilt if its prefix moves.
 3. Install and verify the Node from the Bundle:
@@ -82,9 +83,11 @@ nonfinite, or faulted state cannot produce a plan. Replayed ticks do not refresh
 state age. The source timestamp also prevents queued old DDS samples from
 becoming fresh merely because they were read later.
 
-Positions are metres and orientations normalized `xyzw`. `g1d_base` is the
-retained URDF's **pelvis frame with neutral waist**, not a calibrated world or
-floor frame. `L_ee`/`R_ee` are 5 cm along the local wrist-yaw X axis. The state
+Positions are metres and orientations normalized `xyzw`. `unirobot_g1d_fixed_base`
+is the **virtual UniRobot fixed-base model frame**, not a calibrated world,
+floor, or actual mobile-base frame. The model locks base/lift/waist at zero;
+actual waist angles need not be zero and are not passed to arm IK. Old
+`g1d_base` targets are rejected. `L_ee`/`R_ee` are 5 cm along the local wrist-yaw X axis. The state
 query exposes 7 ordered joint positions per arm in radians. Requested Dex1
 opening is rejected until its readiness integration is delivered. Plans have
 a five-second lifetime and are bound internally to Runtime identity, target,

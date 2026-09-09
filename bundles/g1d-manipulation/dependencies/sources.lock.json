@@ -1,14 +1,14 @@
 [
   {
     "name": "cyclonedds-core",
-    "filename": "cyclonedds-core-11.0.1.tar.gz",
-    "url": "https://codeload.github.com/eclipse-cyclonedds/cyclonedds/tar.gz/refs/tags/11.0.1",
-    "sha256": "c25d46075ad6b5cee564bda9e5f49509e9a6dbb1a8b858e708eb360d335cf973"
+    "filename": "cyclonedds-core-0.10.2.tar.gz",
+    "url": "https://codeload.github.com/eclipse-cyclonedds/cyclonedds/tar.gz/refs/tags/0.10.2",
+    "sha256": "bc84e137e0c8a055b8cd97fbeafec94e36de1b0c2e88800896a82384fd867ae5"
   },
   {
     "name": "cyclonedds-python",
-    "filename": "cyclonedds-11.0.1.tar.gz",
-    "url": "https://files.pythonhosted.org/packages/83/52/f501db026eff5aed63598c51b58a09ee45cf90306791cbf7c05f1a30ebf9/cyclonedds-11.0.1.tar.gz",
-    "sha256": "487cdd9e3dbe3bc6f66c3318c45979f4015bb9d32d5dfcb9bb4a67376176a526"
+    "filename": "cyclonedds-0.10.2.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/62/88/4b440f5916976234838989c3214222a5abc6fd48009a992c4dc22a86c04f/cyclonedds-0.10.2.tar.gz",
+    "sha256": "f834962eabbdcdf4e9cd75cf87222f3c5ef22d9cb9e7ed651d9a8710fe984a30"
   }
 ]

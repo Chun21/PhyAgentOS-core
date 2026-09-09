@@ -27,9 +27,10 @@ def test_packaged_action_endpoint_identity_stop_and_results(monkeypatch):
         context = ToolContext(
             key, "g1d.dual_arm.execute_pose", "test", "g1d.dual_arm", "execute_pose", caller_id="a"
         )
-        arguments = {"plan_id": h.make_plan().plan_id, "caller_id": "a"}
+        arguments = {"plan_id": h.make_plan().plan_id}
         accepted = await endpoint.start(ToolRequest(arguments), context, Events())
         assert accepted.details["invocation_id"] == "gateway-1"
+        assert executor.get_invocation("gateway-1").caller_id == "a"
         assert (await endpoint.status(key)).phase == "accepted"
         assert (await endpoint.result(key)).status == "pending"
         run_to_completion(h)
@@ -50,6 +51,17 @@ def test_packaged_action_endpoint_identity_stop_and_results(monkeypatch):
         assert (await endpoint.result(retry_key)).result.status == "succeeded"
         bad = ToolExecutionKey("gateway-1", "wrong-attempt")
         assert (await endpoint.result(bad)).status == "not_found"
+
+        from forge_tool.wire import ToolProtocolError
+
+        class AlreadyObserved:
+            async def emit(self, event):
+                raise ToolProtocolError("FORGE_ENDPOINT_EVENT_AFTER_TERMINAL", "queried first")
+
+        endpoint._events[key] = AlreadyObserved()
+        await endpoint.emit_updates()
+        assert not endpoint._events
+        assert (await endpoint.result(key)).result.status == "succeeded"
 
     asyncio.run(run())
     executor.close()
@@ -93,7 +105,7 @@ def test_production_gateway_executes_and_returns_observed_result(tmp_path, monke
     poses = runtime.kinematics.solve_fk([0.0] * 7, [0.0] * 7)
     targets = {
         side: {
-            "frame_id": "g1d_base",
+            "frame_id": "unirobot_g1d_fixed_base",
             "position_m": list(p.position_m),
             "orientation_xyzw": list(p.orientation_xyzw),
         }

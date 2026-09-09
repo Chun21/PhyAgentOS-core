@@ -58,11 +58,14 @@ def build(gateway_archive: Path | None = None) -> Path:
         "g1d_dex1",
         "g1d_dex1_bridge",
         "g1d_control_loop",
+        "g1d_control_session",
+        "g1d_motion_switcher",
         "g1d_action_endpoint",
         "g1d_authority",
         "g1d_execution_runtime",
         "g1d_bridge",
         "g1d_kinematics_pin",
+        "g1d_kinematics_unirobot",
         "g1d_runtime",
         "g1d_gateway",
     ):
@@ -71,6 +74,9 @@ def build(gateway_archive: Path | None = None) -> Path:
     for name in ("g1_d.urdf", "README.md", "LICENSE"):
         relative = f"assets/robots/g1d/{name}"
         files[relative] = (ROOT / relative).read_bytes()
+    for path in sorted((ROOT / "assets/robots/g1d/unirobot_ik").iterdir()):
+        if path.is_file():
+            files[str(path.relative_to(ROOT))] = path.read_bytes()
     for path in [BUNDLE / "tools/tools.json", BUNDLE / "profiles/real-g1d/kinematics.json"]:
         files[f"bundle/{path.relative_to(BUNDLE)}"] = path.read_bytes()
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:

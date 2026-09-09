@@ -17,11 +17,11 @@ import json
 import math
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-from PhyAgentOS.skill_runtime.g1d_trajectory import quintic_duration
+from PhyAgentOS.skill_runtime.g1d_trajectory import JointPath, quintic_duration
 
 TOTAL_MOTOR_SLOTS = 35
 ARM_DOF = 7
@@ -340,6 +340,7 @@ class PosePlan:
     start_q: tuple[float, ...] | None = None
     dex1_left_opening: float | None = None
     dex1_right_opening: float | None = None
+    joint_path: JointPath | None = None
 
     @property
     def checks_passed(self) -> bool:
@@ -577,6 +578,45 @@ class G1DPlanner:
         self._plans[plan.plan_id] = plan
         self._evict_expired(now)
         return plan
+
+    def add_wave(self, plan: PosePlan) -> PosePlan:
+        """Raise to the IK pose, wave the right wrist, and return observed joints."""
+        if plan.start_q is None or not plan.checks_passed:
+            raise PoseValidationError("wave needs a validated plan and observed start")
+        if any(p.dex1_opening is not None for p in plan.targets or ()):
+            raise PoseValidationError("wave is arm-only")
+        start = plan.start_q
+        raised = (*start[:7], *plan.joint_solution.right_q)
+        points = [start, raised]
+        for offset in (.35, -.35, .35, -.35, 0.0):
+            q = list(raised)
+            q[13] += offset
+            self._validate_solution(JointSolution(tuple(q[:7]), tuple(q[7:])))
+            points.append(tuple(q))
+        points.append(start)
+        durations = tuple(quintic_duration(a, b,
+            minimum_duration_s=self._minimum_duration_s,
+            max_velocity=self._max_joint_velocity_rad_per_s,
+            max_acceleration=self._max_joint_acceleration_rad_per_s2,
+            max_jerk=self.max_joint_jerk_rad_per_s3)
+            for a, b in zip(points[:-1], points[1:], strict=True))
+        path = JointPath(tuple(points), durations)
+        poses = self._kinematics.solve_fk(start[:7], start[7:])
+        assert plan.targets is not None
+        targets = tuple(ArmPose(frame_id=plan.targets[0].frame_id,
+            position_m=p.position_m, orientation_xyzw=p.orientation_xyzw) for p in poses)
+        result = replace(plan,
+            joint_solution=JointSolution(start[:7], start[7:]), targets=(targets[0], targets[1]),
+            joint_path=path,
+            binding=replace(plan.binding, target_digest=digest_json({
+                "pose": plan.binding.target_digest, "gesture": "right_wave_v1",
+                "points": points, "durations": durations})),
+            trajectory=replace(plan.trajectory, duration_s=path.duration_s,
+                max_velocity=self._max_joint_velocity_rad_per_s,
+                max_acceleration=self._max_joint_acceleration_rad_per_s2,
+                max_jerk=self.max_joint_jerk_rad_per_s3))
+        self._plans[plan.plan_id] = result
+        return result
 
     def get_plan(self, plan_id: str) -> PosePlan:
         """Fetch a plan while its five-second validity window is open."""

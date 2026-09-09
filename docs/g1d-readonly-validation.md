@@ -3,6 +3,12 @@
 Validated on 2026-09-08 in the `phyagent` conda environment (CPython 3.12.14,
 Pinocchio 4.1.0, NumPy 2.5.3, CycloneDDS Python 11.0.1, Dora 0.4.1).
 
+Subsequent DDS migration: C core and Python binding are now pinned to 0.10.2.
+The 29 bridge, Dex1 bridge, read-only Runtime, and installed Gateway tests passed
+with that version on 2026-09-08. Unicast loopback discovery explicitly uses
+`ParticipantIndex=auto`. See `g1d-robot-deployment-status.md` for native deployment
+and the still-unresolved physical lowstate feedback check.
+
 | Check | Result |
 | --- | --- |
 | Complete repository pytest suite | 129 passed |

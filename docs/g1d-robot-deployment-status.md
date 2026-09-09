@@ -1,5 +1,30 @@
 # Robot-host diagnostic deployment
 
+Latest update: the UniRobot-aligned IK is deployed read-only at
+`/home/unitree/phyagent-deploy/ik-aligned`. Fresh physical lowstate is now
+received and a current-pose bilateral plan succeeded. The earlier
+`state_unavailable` results below are historical. See
+`g1d-unirobot-ik-alignment.md` for model parity, artifact hash and validation.
+
+Current DDS update (2026-09-08): the development-host and robot-host conda
+`phyagent` environments now use CycloneDDS Python and C core **0.10.2**.
+Both loaded-library checks resolved `g1d-dds-0.10.2/lib/libddsc.so.0.10.2`;
+both environments passed `pip check`. Conda environment variables pin
+`CYCLONEDDS_HOME` to this prefix; reactivate existing shells to apply it.
+The robot read-only Runtime was restarted as PID 6037 with the updated
+`g1d_readonly.sh`; its log is `runtime-dds-0102.log` in the deployment directory.
+The original 0.3.0 archive below remains unchanged: this is an environment
+migration, not a newly published release. Repository source locks and the
+installer now target 0.10.2 for future bundles.
+
+Validation after migration: 29 DDS bridge/read-only/installed-Gateway tests
+passed, including direct, Dora, and execution composition on isolated loopback
+DDS domains. The unicast test configuration explicitly sets
+`ParticipantIndex=auto`, required by 0.10.2 for peer port discovery.
+The physical domain probe still received zero frames in five seconds, and the
+robot Gateway still returned `state_unavailable`. No physical command was sent.
+The historical 11.0.1 installation details below describe the original build.
+
 Date: 2026-09-08. Host: `192.168.123.164`, Ubuntu 20.04.6, aarch64.
 
 The 0.3.0 release is extracted at
@@ -57,3 +82,21 @@ does not establish the presence of a publisher or fresh feedback.
 
 No robot movement, controller handoff, or acceptance of physical execution has
 been performed. Other projects are not dependencies of this deployment.
+
+Follow-up after the operator reported normal control and visible DDS topics:
+
+- Direct built-in publication/subscription discovery on the robot in conda
+  `phyagent` found `rt/lowstate`: 0 writers, 4 readers;
+  `rt/lf/lowstate`: 0 writers, 4 readers; `rt/lowcmd`: 1 writer, 0 readers.
+  These are endpoints visible during an eight-second scan, not a claim that
+  publishers cannot exist elsewhere or that factory control is broken.
+- Setting `AllowMulticast=true` for the diagnostic process, then adding peers
+  `192.168.123.161`, `.163`, and `.1`, produced the same counts. The robot's
+  persisted DDS configuration was not changed.
+- The development-host PhyAgentOS reader reported zero matched publications,
+  zero requested-incompatible-QoS events, zero rejected samples, and no frame
+  after four seconds. This does not establish type compatibility with an
+  undiscovered publisher.
+- PID 6568 in the operator's discovery output is this deployment's read-only
+  Runtime subscriber. The Gateway still returned `state_unavailable` after
+  these checks. Discovery works, but fresh joint feedback remains unresolved.

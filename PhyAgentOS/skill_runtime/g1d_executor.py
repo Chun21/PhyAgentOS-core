@@ -13,9 +13,11 @@ from __future__ import annotations
 import enum
 import fcntl
 import hashlib
+import io
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
@@ -222,7 +224,7 @@ class G1DExecutor:
         self._journal.execute(
             "CREATE TABLE IF NOT EXISTS evidence (invocation TEXT, phase TEXT, record TEXT, PRIMARY KEY(invocation, phase))"
         )
-        self._stream_evidence: list[dict[str, Any]] = []
+        self._stream_evidence: list[str] = []
         self._pose_evidence: list[dict[str, Any]] = []
         for (raw,) in self._journal.execute("SELECT record FROM actions").fetchall():
             data = json.loads(raw)
@@ -291,6 +293,9 @@ class G1DExecutor:
 
         plan = self._require_current_plan(plan_id)
         self._require_binding(plan)
+        validate_plan = getattr(self._sink, "validate_plan", None)
+        if validate_plan is not None:
+            validate_plan(plan)
         self._plan = plan
         # Readiness gate: fresh CRC-valid state, approved mode, safety healthy.
         state = self._adapter.require_ready()
@@ -361,7 +366,8 @@ class G1DExecutor:
                 (invocation.invocation_id, json.dumps(data, allow_nan=False)),
             )
 
-    def _write_evidence(self, invocation: Invocation, phase: str, payload: dict[str, Any]) -> None:
+    def _write_evidence(self, invocation: Invocation, phase: str, payload: dict[str, Any],
+                        *, frame_json: Sequence[str] | None = None) -> None:
         record = {
             "phase": phase,
             "invocation_id": invocation.invocation_id,
@@ -373,12 +379,53 @@ class G1DExecutor:
             "monotonic_at": self._clock(),
             "payload": payload,
         }
-        raw = json.dumps(record, sort_keys=True, allow_nan=False)
-        record["sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+        if frame_json is None:
+            raw = json.dumps(record, sort_keys=True, allow_nan=False)
+            digest = hashlib.sha256(raw.encode()).hexdigest()
+        else:
+            # Frames are encoded individually during streaming. Retaining only
+            # strings avoids a growing graph of GC-tracked motor dictionaries.
+            output = io.StringIO()
+            hasher = hashlib.sha256()
+            yielded_at = time.monotonic()
+
+            def append(chunk: str) -> None:
+                nonlocal yielded_at
+                output.write(chunk)
+                hasher.update(chunk.encode())
+                if time.monotonic() - yielded_at >= .001:
+                    time.sleep(0)
+                    yielded_at = time.monotonic()
+
+            append("{")
+            for index, key in enumerate(sorted(record)):
+                append((", " if index else "") + json.dumps(key) + ": ")
+                if key == "payload":
+                    append('{"frames": [')
+                    for frame_index, encoded in enumerate(frame_json):
+                        append((", " if frame_index else "") + encoded)
+                    append('], "observations": ')
+                    append(json.dumps(payload["observations"], sort_keys=True, allow_nan=False))
+                    append("}")
+                else:
+                    append(json.dumps(record[key], sort_keys=True, allow_nan=False))
+            append("}")
+            raw = output.getvalue()
+            digest = hasher.hexdigest()
+        encoded_record = raw[:-1] + ', "sha256": ' + json.dumps(digest) + "}"
         self._journal.execute(
             "INSERT OR REPLACE INTO evidence VALUES (?, ?, ?)",
-            (invocation.invocation_id, phase, json.dumps(record, allow_nan=False)),
+            (invocation.invocation_id, phase, encoded_record),
         )
+
+    @_serialized
+    def evidence_json(self, invocation_id: str) -> list[str]:
+        """Return persisted JSON without decoding large evidence on the controller."""
+        self.get_invocation(invocation_id)
+        records = dict(self._journal.execute(
+            "SELECT phase, record FROM evidence WHERE invocation=?", (invocation_id,)
+        ))
+        return [records[phase] for phase in ("before", "during", "after") if phase in records]
 
     @_serialized
     def evidence(self, invocation_id: str) -> list[dict[str, Any]]:
@@ -716,9 +763,14 @@ class G1DExecutor:
             max_acceleration=self._planner.max_joint_acceleration_rad_per_s2,
             max_jerk=self._planner.max_joint_jerk_rad_per_s3,
         )
+        if plan.joint_path is not None:
+            self._motion_duration_s = plan.joint_path.duration_s
 
     def _motion_frame(self, t: float) -> LowCmdFrame:
         assert self._motion_start is not None and self._motion_duration_s is not None
+        if self._plan is not None and self._plan.joint_path is not None:
+            q, dq, _ = self._plan.joint_path.sample(t - self._motion_start)
+            return self._overlay_arm_q(q, dq)
         s = min(1.0, max(0.0, (t - self._motion_start) / self._motion_duration_s))
         blend = _quintic(s)
         q = tuple(
@@ -767,9 +819,13 @@ class G1DExecutor:
         self._last_emit_t = t
         self._last_command = frame
         self._write_command(StreamSample(seq=seq, t_s=t, frame=frame, phase=phase))
-        self._stream_evidence.append(
-            {"seq": seq, "monotonic_at": t, "phase": phase.value, "frame": asdict(frame)}
-        )
+        self._stream_evidence.append(json.dumps(
+            {"seq": seq, "monotonic_at": t, "phase": phase.value, "frame": {
+                "mode_machine": frame.mode_machine, "mode_pr": frame.mode_pr,
+                "motor_cmd": tuple(vars(command).copy() for command in frame.motor_cmd),
+                "reserve": frame.reserve, "crc": frame.crc,
+            }}, sort_keys=True, allow_nan=False
+        ))
         if self._active is not None:
             self._active.frames_emitted = self._seq
 
@@ -813,6 +869,10 @@ class G1DExecutor:
                 (b - a) * 60 * u * (1 - u) * (1 - 2 * u) / self._motion_duration_s**2
                 for a, b in zip(self._start_q, self._target_q, strict=True)
             ]
+            if self._plan is not None and self._plan.joint_path is not None:
+                _, _, acceleration = self._plan.joint_path.sample(
+                    (self._last_emit_t or now) - self._motion_start)
+                ddq = list(acceleration)
         try:
             self._stop_trajectory = plan_stop(
                 q,
@@ -900,7 +960,7 @@ class G1DExecutor:
                 self._write_evidence(
                     candidate,
                     "during",
-                    {"frames": self._stream_evidence, "observations": self._pose_evidence},
+                    {"observations": self._pose_evidence}, frame_json=self._stream_evidence,
                 )
                 self._write_evidence(
                     candidate,

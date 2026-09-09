@@ -32,4 +32,4 @@ artifacts:
       arch: aarch64
       artifact_type: executable_tar_gz
       entrypoint: g1d-runtime
-      sha256: 9e1e97e49600b660eed13b4fe9472aca836c1776dc03cc4afe94f77fcd5ea57a
+      sha256: 6a5d89e013a8251416ee16513ecbf94834457b0124390a8ed463d27de5a0ca1c

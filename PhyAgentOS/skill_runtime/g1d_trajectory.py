@@ -100,3 +100,31 @@ def quintic_duration(
         math.sqrt(10 * math.sqrt(3) / 3 * delta / max_acceleration),
         (60 * delta / max_jerk) ** (1 / 3),
     )
+
+
+@dataclass(frozen=True)
+class JointPath:
+    """C2 quintic segments with no dwell between waypoints."""
+
+    points: tuple[tuple[float, ...], ...]
+    durations: tuple[float, ...]
+
+    @property
+    def duration_s(self) -> float:
+        return sum(self.durations)
+
+    def sample(self, elapsed_s: float):
+        elapsed = max(0.0, elapsed_s)
+        for index, duration in enumerate(self.durations):
+            if elapsed <= duration or index == len(self.durations) - 1:
+                u = min(1.0, elapsed / duration)
+                a, b = self.points[index:index + 2]
+                blend = u**3 * (10 + u * (-15 + 6 * u))
+                q = tuple(x + (y - x) * blend for x, y in zip(a, b, strict=True))
+                dq = tuple((y - x) * 30 * u**2 * (1 - u)**2 / duration
+                           for x, y in zip(a, b, strict=True))
+                ddq = tuple((y - x) * 60 * u * (1 - u) * (1 - 2*u) / duration**2
+                            for x, y in zip(a, b, strict=True))
+                return q, dq, ddq
+            elapsed -= duration
+        raise ValueError("empty joint path")

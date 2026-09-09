@@ -1,17 +1,27 @@
 # G1_D manipulation
 
-Use this Skill to inspect Unitree G1_D arm-pair state and obtain bilateral pose plans.
-This release has one `real-g1d` profile and is read-only. Its four Tools remain discoverable;
-`execute_pose` reports `action_not_ready`, and `stop` reports `no_active_operation` with
-`already_stopped` details. Reconcile these outcomes through the Gateway invocation ID.
+Use this Skill to inspect Unitree G1_D arm-pair state and plan and execute bilateral poses.
+The `real-g1d` profile starts read-only by default. An operator may explicitly start a
+bounded control session using `CONTROL.md`. Require `action_ready` before execution;
+the four Tools remain discoverable when execution is unavailable.
 
 Before an Action, inspect the relevant Tool context and bind the call to the current AgentTask.
 Both arm target poses are required. Every pose supplies an explicit frame, positions in metres,
 and a normalized `xyzw` quaternion. `plan_pose` is read-only and returns a short-lived plan;
-its validity window is five seconds. Use `g1d_base`, which denotes the packaged model's
-`pelvis` frame with the waist locked at neutral, and metric positions with normalized `xyzw`
-quaternions. The Runtime subscribes to DDS state and uses its internal Pinocchio solver.
-Startup, inspection, and planning publish no `rt/lowcmd` or control-mode requests.
+its validity window is five seconds. Use `unirobot_g1d_fixed_base`, the UniRobot
+virtual model frame with base/lift/waist locked at zero. This is not the physical
+floor/world frame or a measured mobile-base frame. Real waist angles may be nonzero;
+they are outside the arm-only IK. Reject old `g1d_base` targets instead of relabeling
+their coordinates. The Runtime uses the pinned UniRobot CasADi/IPOPT algorithm.
+Default startup, inspection, and planning publish no `rt/lowcmd` or control-mode requests.
+An explicitly enabled control session takes over and continuously holds the current pose
+between Actions. Waist position is held, never included as an IK target.
+
+The state Tool returns `end_effector_poses.left` and `.right` in the same frame used for
+planning. Use these observed poses for relative targets. Submit only `plan_id` and the
+optional operation deadline to `execute_pose`: the Agent supplies the durable caller ID.
+Wait for a known successful terminal result before planning the next operation. On
+unknown outcome, stop the sequence and reconcile; never automatically retry or return.
 
 Runtime readiness is not robot Action readiness. A healthy process or Gateway does not imply that
 the safety gate, fresh state, approved mode, E-stop, or external Dex1 service are ready. Query
@@ -19,8 +29,9 @@ the safety gate, fresh state, approved mode, E-stop, or external Dex1 service ar
 never blindly retry an unknown outcome. `g1d.dual_arm.stop` is idempotent and only targets the
 active invocation.
 
-The existing Dex1 service is external to this Bundle. This slice reports its readiness as
-absent and rejects plans requesting Dex1 opening. Physical execution, E-stop verification,
-base-frame calibration, and supervised hardware acceptance remain separate delivery gates.
+The existing Dex1 service is external to this Bundle. Native arm-only control reports it
+as absent and rejects plans requesting Dex1 opening. E-stop and physical clearance require
+the operator; DDS state cannot verify them. Hardware acceptance must use measured movement,
+not merely a successful Tool response.
 
 For installation and managed start/status/stop, read `READONLY.md` in this Bundle.

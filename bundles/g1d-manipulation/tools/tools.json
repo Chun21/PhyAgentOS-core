@@ -7,7 +7,7 @@
     "description": "Validate and plan a bilateral arm target without motion.",
     "max_concurrency": 8,
     "robot_frame_profile": {
-      "base_frame": "g1d_base",
+      "base_frame": "unirobot_g1d_fixed_base",
       "tool_frame": "tcp",
       "position_unit": "m",
       "orientation": "normalized_xyzw",
@@ -32,6 +32,10 @@
           "type": "number",
           "minimum": 1,
           "maximum": 120
+        },
+        "gesture": {
+          "type": "string",
+          "enum": ["wave"]
         }
       },
       "$defs": {
@@ -133,7 +137,7 @@
     "description": "Execute one validated bilateral plan as an atomic physical Action.",
     "max_concurrency": 1,
     "robot_frame_profile": {
-      "base_frame": "g1d_base",
+      "base_frame": "unirobot_g1d_fixed_base",
       "tool_frame": "tcp",
       "position_unit": "m",
       "orientation": "normalized_xyzw",
@@ -144,8 +148,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "plan_id",
-        "caller_id"
+        "plan_id"
       ],
       "properties": {
         "plan_id": {
@@ -203,11 +206,22 @@
         "runtime_ready": {
           "type": "boolean"
         },
+        "runtime_instance_id": {"type": "string", "minLength": 1},
+        "skill_version": {"type": "string", "minLength": 1},
         "action_ready": {
           "type": "boolean"
         },
         "state_age_ms": {
           "type": "number"
+        },
+        "end_effector_poses": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["left", "right"],
+          "properties": {
+            "left": {"$ref": "#/$defs/observed_pose"},
+            "right": {"$ref": "#/$defs/observed_pose"}
+          }
         },
         "safety_gate": {
           "type": "string"
@@ -313,6 +327,18 @@
                 "type": "number"
               }
             }
+          }
+        }
+      },
+      "$defs": {
+        "observed_pose": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["frame_id", "position_m", "orientation_xyzw"],
+          "properties": {
+            "frame_id": {"const": "unirobot_g1d_fixed_base"},
+            "position_m": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"type": "number"}},
+            "orientation_xyzw": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
           }
         }
       }

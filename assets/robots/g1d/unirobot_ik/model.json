@@ -1,0 +1,61 @@
+{
+  "reference_commit": "7d99ebf5f13d0b2fd97ea8c295de356e526001c2",
+  "reference_cache_sha256": "cb9553802a29b1d15c9d4d8d6e0b9500701fd5337ef14839c1f3de49f786749a",
+  "pinocchio": "3.1.0",
+  "casadi": "3.6.7",
+  "joint_names": [
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint"
+  ],
+  "lower": [
+    -3.0892,
+    -1.5882,
+    -2.618,
+    -1.0472,
+    -1.972222054,
+    -1.614429558,
+    -1.614429558,
+    -3.0892,
+    -2.2515,
+    -2.618,
+    -1.0472,
+    -1.972222054,
+    -1.614429558,
+    -1.614429558
+  ],
+  "upper": [
+    2.6704,
+    2.2515,
+    2.618,
+    2.0944,
+    1.972222054,
+    1.614429558,
+    1.614429558,
+    2.6704,
+    1.5882,
+    2.618,
+    2.0944,
+    1.972222054,
+    1.614429558,
+    1.614429558
+  ],
+  "frame": "unirobot_g1d_fixed_base",
+  "functions": {
+    "fk.casadi": "2fbb17770e5358fadb2bb85b9302b23d3ecb3993b9c61b4a38076e9a9301ed90",
+    "translation.casadi": "857316041ec15989cfa4df96b33776a23eeb1a69890c046e92e043ed84a9009d",
+    "rotation.casadi": "22ca74d8032b9d0b334828f67ef45241ed4f114dc625cdee33661dd113834a82",
+    "gravity.casadi": "a18e6b3f86d354b7deafcb9887f7111eee6dc4667f1ce075b2ca1b4ca7ec0a19"
+  }
+}

@@ -5,8 +5,10 @@
   "left_slots": [15, 16, 17, 18, 19, 20, 21],
   "right_slots": [22, 23, 24, 25, 26, 27, 28],
   "preserved_slots": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-  "ik_solver": "internal.pinocchio_dls_v1",
-  "base_frame": "g1d_base",
+  "ik_solver": "unirobot.g1d_dex1_casadi_ipopt_v1",
+  "base_frame": "unirobot_g1d_fixed_base",
+  "model_frame": "unirobot_g1d_fixed_base",
+  "model_sha256": "2fe2fe254c7c27d1c032dfbaa269a2e0bbd90081aad1e50fa11a222079234651",
   "urdf_base_link": "pelvis",
   "urdf_sha256": "0e06766885ae6342616cd636dffe858f3f063d14e526557edb6ff818342a0ed9",
   "joint_limits_rad": [
@@ -28,6 +30,6 @@
     "writer_jitter_p99_ms": 0.5,
     "watchdog_missed_cycles": 10
   },
-  "reference_algorithm": "UniRobot G1_D_DEX1_ArmIK (Apache-2.0 reference only); internal solver is damped least-squares Pinocchio",
+  "reference_algorithm": "UniRobot 7d99ebf G1_D_DEX1_ArmIK; CasADi 3.6.7 IPOPT, actual cached model, current-state initialization, float32 weighted filtering, RNEA gravity",
   "provenance": "assets/robots/g1d/g1_d.urdf; Unitree robot description, Apache-2.0 attribution retained in assets/robots/g1d/README.md"
 }

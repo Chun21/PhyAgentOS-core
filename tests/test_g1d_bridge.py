@@ -77,6 +77,25 @@ def make_state(**overrides) -> HGLowState:
     return state
 
 
+def test_hg_crc_matches_firmware_bitwise_oracle() -> None:
+    import random
+
+    from PhyAgentOS.skill_runtime.g1d_bridge import _crc32_msb
+
+    def oracle(words):
+        crc = 0xFFFFFFFF
+        for word in words:
+            crc ^= word
+            for _ in range(32):
+                crc = ((crc << 1) ^ (0x04C11DB7 if crc & 0x80000000 else 0)) & 0xFFFFFFFF
+        return crc
+
+    randomizer = random.Random(102)
+    for words in ([], [0], [0xFFFFFFFF], [0x12345678],
+                  [randomizer.getrandbits(32) for _ in range(522)]):
+        assert _crc32_msb(words) == oracle(words)
+
+
 def test_hg_lowstate_crc_is_deterministic_and_tamper_sensitive() -> None:
     state = make_state()
     assert hg_lowstate_crc(state) == state.crc

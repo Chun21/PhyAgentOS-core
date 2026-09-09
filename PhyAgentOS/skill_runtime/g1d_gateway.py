@@ -1,8 +1,8 @@
-"""Embed the upstream Forge Tool Gateway and handler in the read-only node.
+"""Embed the upstream Forge Tool Gateway and handler in the robot-side node.
 
 The Gateway mailbox carries the unchanged Forge envelopes in-process. Dora
 supervises this node; DDS ingestion and model solving belong to the Skill.
-No command publisher or control-mode client is constructed.
+Command publication requires an explicitly configured control authority.
 """
 
 from __future__ import annotations
@@ -138,7 +138,8 @@ class G1DGateway:
         specs = [
             ToolSpec(
                 tool_id=spec["tool_id"],
-                implementation_id="g1d.internal.readonly.v1",
+                implementation_id=("g1d.internal.execution.v1" if self.action_endpoint
+                                   else "g1d.internal.readonly.v1"),
                 endpoint_id=ENDPOINT,
                 operation=spec["operation"],
                 semantics=spec["semantics"],
@@ -147,7 +148,7 @@ class G1DGateway:
                 output_schema=spec["output_schema"],
                 robot_frame_profile=RobotFrameProfile(
                     robot_id="unitree-g1d",
-                    base_frame="g1d_base",
+                    base_frame=runtime.config["base_frame"],
                     tool_frame="tcp",
                     frames={"base_link": "pelvis", "left_tcp": "L_ee", "right_tcp": "R_ee"},
                 ),
@@ -256,13 +257,25 @@ class G1DGateway:
             @app.get("/g1d/evidence/{invocation_id}")
             def evidence(invocation_id: str):
                 from fastapi import HTTPException
+                from fastapi.responses import StreamingResponse
 
                 from PhyAgentOS.skill_runtime.g1d_executor import UnknownInvocationError
 
                 try:
-                    return executor.evidence(invocation_id)
+                    records = executor.evidence_json(invocation_id)
                 except UnknownInvocationError as error:
                     raise HTTPException(404, str(error)) from error
+
+                def chunks():
+                    yield "["
+                    for index, record in enumerate(records):
+                        if index:
+                            yield ","
+                        for offset in range(0, len(record), 65536):
+                            yield record[offset:offset + 65536]
+                    yield "]"
+
+                return StreamingResponse(chunks(), media_type="application/json")
 
         return app
 
@@ -281,11 +294,22 @@ def main() -> None:
         "--authority-socket", type=Path, help="approved robot-supervisor Unix socket"
     )
     parser.add_argument("--journal", type=Path, help="durable invocation/evidence SQLite path")
+    parser.add_argument("--operator-confirmed", action="store_true",
+                        help="explicit supervised native control session; releases factory ai mode")
+    parser.add_argument("--session-seconds", type=float, default=300,
+                        help="bounded native operator session, 10..1800 seconds")
+    parser.add_argument("--max-arm-excursion-rad", type=float,
+                        help="native session joint excursion, capped at 1.5 rad")
+    parser.add_argument("--controller-lock", type=Path,
+                        default=Path.home() / ".phyagent/g1d-controller.lock")
     args = parser.parse_args()
-    if any((args.control_profile, args.authority_socket, args.journal)) and not all(
-        (args.control_profile, args.authority_socket, args.journal)
-    ):
-        parser.error("execution requires control-profile, authority-socket and journal together")
+    if args.operator_confirmed and args.authority_socket:
+        parser.error("choose native operator session or external authority, not both")
+    if args.max_arm_excursion_rad is not None and not args.operator_confirmed:
+        parser.error("excursion override requires operator-confirmed native control")
+    if any((args.control_profile, args.authority_socket, args.journal, args.operator_confirmed)):
+        if not (args.control_profile and args.journal and (args.authority_socket or args.operator_confirmed)):
+            parser.error("execution requires control-profile, journal and operator-confirmed or authority-socket")
     if args.profile != "real-g1d":
         parser.error("unknown profile")
     # Establish the managed Dora node connection only when launched by Dora.
@@ -298,8 +322,15 @@ def main() -> None:
     root = Path(
         os.environ.get("PAOS_SKILL_ROOT", str(Path(__file__).resolve().parents[2] / "bundle"))
     )
-    source = CycloneLowStateSource(domain_id=int(os.environ.get("PAOS_G1D_DDS_DOMAIN", "0")))
+    source: Any = CycloneLowStateSource(domain_id=int(os.environ.get("PAOS_G1D_DDS_DOMAIN", "0")))
+    shared_source = None
+    if args.operator_confirmed:
+        from PhyAgentOS.skill_runtime.g1d_bridge import SharedLowStateSource
+
+        shared_source = SharedLowStateSource(source)
+        source = shared_source
     authority = None
+    session = None
     runtime: G1DReadOnlyRuntime
     if args.control_profile:
         import json
@@ -311,8 +342,11 @@ def main() -> None:
         from PhyAgentOS.skill_runtime.g1d_planner import digest_json
 
         config = json.loads(args.control_profile.read_text())
-        authority = SupervisorAuthority(args.authority_socket, digest_json(config))
+        if args.max_arm_excursion_rad is not None:
+            config["max_arm_excursion_rad"] = args.max_arm_excursion_rad
         domain = int(os.environ.get("PAOS_G1D_DDS_DOMAIN", "0"))
+        if args.operator_confirmed and config.get("dex1"):
+            parser.error("native arm-only session does not enable Dex1 commands")
         dex_bridge = (
             CycloneDex1Bridge(domain_id=domain, **config["dex1"]) if config.get("dex1") else None
         )
@@ -323,25 +357,46 @@ def main() -> None:
             if dex_bridge
             else None
         )
+        sink: Any = G1DCommandSink(CycloneLowCmdSink(domain_id=domain), dex_bridge)
+        if args.operator_confirmed:
+            from PhyAgentOS.skill_runtime.g1d_control_session import ControlSession, LowCmdDiscovery
+            from PhyAgentOS.skill_runtime.g1d_motion_switcher import MotionSwitcher
+
+            session = ControlSession(
+                config=config, source=source,
+                sink=sink.arm, motion=MotionSwitcher(domain), discovery=LowCmdDiscovery(domain),
+                lock_path=args.controller_lock, duration_s=args.session_seconds)
+            sink = session
+            ownership = session.require
+        else:
+            authority = SupervisorAuthority(args.authority_socket, digest_json(config))
+            ownership = authority.require
+        args.journal.parent.mkdir(parents=True, exist_ok=True)
         runtime = G1DExecutionRuntime(
             root,
             source=source,
-            sink=G1DCommandSink(CycloneLowCmdSink(domain_id=domain), dex_bridge),
+            sink=sink,
             journal_path=args.journal,
             approved_mode=config["approved_mode"],
             gains=config["gains"],
             modes=config["modes"],
-            require_ownership=authority.require,
+            require_ownership=ownership,
             clock=time.monotonic,
             dex1=dex1,
         )
-        authority.start()
+        if authority is not None:
+            authority.start()
     else:
         runtime = G1DReadOnlyRuntime(root, source=source, profile=args.profile)
-    server = uvicorn.Server(
-        uvicorn.Config(G1DGateway(runtime).app(), host=args.host, port=args.port)
-    )
+    gateway = G1DGateway(runtime)
+    server = uvicorn.Server(uvicorn.Config(gateway.app(), host=args.host, port=args.port))
     finished = threading.Event()
+
+    def monitor_session():
+        while not finished.wait(.1):
+            if session.error or session._stop.is_set() or gateway.worker_error or runtime.control.error:
+                server.should_exit = True
+                return
 
     def monitor_dora() -> None:
         assert dora_node is not None
@@ -351,15 +406,30 @@ def main() -> None:
                 server.should_exit = True
                 return
 
-    monitor = None
+    monitors = []
     if dora_node is not None:
         monitor = threading.Thread(target=monitor_dora, name="g1d-dora-lifecycle", daemon=True)
         monitor.start()
+        monitors.append(monitor)
     try:
+        if shared_source is not None:
+            shared_source.start()
+        if session is not None:
+            session.start()
+            monitor = threading.Thread(target=monitor_session, name="g1d-session-lifecycle", daemon=True)
+            monitor.start()
+            monitors.append(monitor)
         server.run()
     finally:
         finished.set()
         if authority is not None:
             authority.close()
-        if monitor is not None:
+        if session is not None:
+            session.close()
+            print("g1d_control_session", json.dumps(session.status()), flush=True)
+        for monitor in monitors:
             monitor.join(timeout=2)
+        if isinstance(runtime, G1DExecutionRuntime):
+            runtime.executor.close()
+        if shared_source is not None:
+            shared_source.close()

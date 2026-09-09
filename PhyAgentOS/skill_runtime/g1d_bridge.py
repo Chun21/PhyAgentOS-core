@@ -7,7 +7,7 @@ topics:
   mirroring the Unitree HG wire layout byte for byte, including the
   ``unitree_hg.msg.dds_`` XTypes type names so native robot participants
   match on the wire.
-- A pure-python replication of the firmware CRC (MSB-first 0x04C11DB7 over
+- A standard-library implementation of the firmware CRC (MSB-first 0x04C11DB7 over
   the packed words, final word excluded), applied to both directions.
 - Thin cyclonedds wrappers: :class:`CycloneLowStateSource` (subscribe
   ``rt/lowstate``) and :class:`CycloneLowCmdSink` (publish ``rt/lowcmd``,
@@ -22,16 +22,18 @@ objects, and string annotations break its type normalization.
 """
 
 import struct
+import threading
 import time
+import zlib
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from PhyAgentOS.skill_runtime.g1d_adapter import (
+    TOTAL_MOTOR_SLOTS,
     LowCmdFrame,
     LowStateFrame,
     MotorCommand,
-    TOTAL_MOTOR_SLOTS,
 )
 
 DEFAULT_DOMAIN_ID = 0
@@ -152,24 +154,19 @@ class HGLowCmd:
 
 
 # ---------------------------------------------------------------------------
-# HG wire CRC (pure-python replication of the firmware crc32_core)
+# HG wire CRC (equivalent to firmware crc32_core)
 # ---------------------------------------------------------------------------
 
 
+_REVERSE_BITS = bytes(int(f"{value:08b}"[::-1], 2) for value in range(256))
+
+
 def _crc32_msb(words: Sequence[int]) -> int:
-    crc = 0xFFFFFFFF
-    polynomial = 0x04C11DB7
-    for word in words:
-        bit = 1 << 31
-        for _ in range(32):
-            if crc & 0x80000000:
-                crc = ((crc << 1) & 0xFFFFFFFF) ^ polynomial
-            else:
-                crc = (crc << 1) & 0xFFFFFFFF
-            if word & bit:
-                crc ^= polynomial
-            bit >>= 1
-    return crc
+    # Reflect the MSB-first word stream for zlib's native reflected CRC,
+    # undo its final XOR, then reflect the register back. No Python bit loop.
+    stream = struct.pack(f">{len(words)}I", *words).translate(_REVERSE_BITS)
+    reflected = zlib.crc32(stream) ^ 0xFFFFFFFF
+    return int.from_bytes(reflected.to_bytes(4, "little").translate(_REVERSE_BITS), "big")
 
 
 def _pack_lowstate(state: Any) -> bytearray:
@@ -207,7 +204,7 @@ def _require_slots(value: Sequence[Any], count: int) -> None:
 
 
 def hg_lowstate_crc(state: Any) -> int:
-    """CRC the firmware places in LowState_.crc, computed in pure python."""
+    """CRC the firmware places in LowState_.crc."""
 
     _require_slots(state.motor_state, TOTAL_MOTOR_SLOTS)
     packed = _pack_lowstate(state)
@@ -231,7 +228,7 @@ def _pack_lowcmd(cmd: Any) -> bytearray:
 
 
 def hg_lowcmd_crc(cmd: Any) -> int:
-    """CRC the firmware places in LowCmd_.crc, computed in pure python."""
+    """CRC the firmware places in LowCmd_.crc."""
 
     _require_slots(cmd.motor_cmd, TOTAL_MOTOR_SLOTS)
     packed = _pack_lowcmd(cmd)
@@ -541,6 +538,42 @@ class CycloneLowStateSource:
         return latest[1], latest[2]
 
 
+class SharedLowStateSource:
+    """Decode each DDS observation once, independently of command and HTTP work."""
+
+    def __init__(self, source: Any) -> None:
+        self.source = source
+        self._latest: tuple[LowStateFrame, float] | None = None
+        self._error: Exception | None = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="g1d-state-receiver", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.is_set():
+                value = self.source.read()
+                if value is not None:
+                    self._latest = value
+                self._stop.wait(.002)
+        except Exception as error:
+            self._error = error
+
+    def read(self) -> tuple[LowStateFrame, float] | None:
+        if self._error is not None:
+            raise self._error
+        return self._latest
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread.ident is not None:
+            self._thread.join(timeout=3)
+            if self._thread.is_alive():
+                raise RuntimeError("DDS receiver did not stop")
+
+
 class CycloneLowCmdSink:
     """Executor command sink that publishes real rt/lowcmd frames.
 
@@ -557,13 +590,26 @@ class CycloneLowCmdSink:
         topic: str = CMD_TOPIC,
         msg_type: type | None = None,
     ) -> None:
+        self.matched = 0
+        writer_options = {}
         if cyclone is None:
             cyclone = _import_cyclone()
+            from cyclonedds.core import Listener
+
+            writer_options["listener"] = Listener(on_publication_matched=self._matched)
         participant = _dds(cyclone, "DomainParticipant")(domain_id)
         self._writer = _dds(cyclone, "DataWriter")(
             _dds(cyclone, "Publisher")(participant),
             _dds(cyclone, "Topic")(participant, topic, msg_type or _resolve_msg_type("LowCmd")),
+            **writer_options,
         )
+
+    def _matched(self, writer: Any, status: Any) -> None:
+        self.matched = status.current_count
+
+    @property
+    def writer_guid(self) -> Any:
+        return self._writer.get_guid()
 
     def write(self, sample: Any) -> None:
         frame = getattr(sample, "frame", None)

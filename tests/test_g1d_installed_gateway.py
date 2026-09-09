@@ -29,7 +29,8 @@ BUNDLE = Path(__file__).parents[1] / "bundles/g1d-manipulation"
 @pytest.mark.parametrize("launch_mode", ["direct", "dora", "execution"])
 def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatch, launch_mode):
     # Confine the test participant and child process to loopback on a non-robot domain.
-    cyclone_xml = '<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces><AllowMulticast>false</AllowMulticast></General><Discovery><Peers><Peer Address="127.0.0.1"/></Peers></Discovery></Domain></CycloneDDS>'
+    # CycloneDDS 0.10.2 requires indexed ports for unicast peer discovery.
+    cyclone_xml = '<CycloneDDS><Domain><General><Interfaces><NetworkInterface name="lo"/></Interfaces><AllowMulticast>false</AllowMulticast></General><Discovery><ParticipantIndex>auto</ParticipantIndex><Peers><Peer Address="127.0.0.1"/></Peers></Discovery></Domain></CycloneDDS>'
     monkeypatch.setenv("CYCLONEDDS_URI", cyclone_xml)
     from cyclonedds.domain import DomainParticipant
     from cyclonedds.pub import DataWriter
@@ -58,6 +59,8 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
     commands = DataReader(participant, Topic(participant, "rt/lowcmd", types["LowCmd"]))
     stop = threading.Event()
     mode = ["fresh"]
+    oracle = json.loads((Path(__file__).parent / "fixtures/g1d_unirobot_ik.json").read_text())[0]
+    source_q = [0.0] * 14 if launch_mode == "execution" else oracle["reference"]
 
     def publish():
         tick = 1
@@ -65,6 +68,8 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
             if mode[0] == "silent":
                 continue
             state = HGLowState(mode_machine=7, tick=tick)
+            for motor, q in zip(state.motor_state[15:29], source_q):
+                motor.q = q
             tick += 1
             state.crc = hg_lowstate_crc(state)
             if mode[0] == "corrupt":
@@ -207,16 +212,16 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
         schemas = json.loads((BUNDLE / "tools/tools.json").read_text())
         validate(state, schemas["g1d.dual_arm.state"]["output_schema"])
         assert state["mode_machine"] == 7 and state["state_age_ms"] <= 100
-        assert state["left_arm"]["joint_positions_rad"] == [0] * 7
-        assert state["right_arm"]["joint_positions_rad"] == [0] * 7
+        assert state["left_arm"]["joint_positions_rad"] == pytest.approx(source_q[:7])
+        assert state["right_arm"]["joint_positions_rad"] == pytest.approx(source_q[7:])
         assert state["action_ready"] is (launch_mode == "execution")
         if launch_mode == "execution":
-            from PhyAgentOS.skill_runtime.g1d_kinematics_pin import PinKinematics
+            from PhyAgentOS.skill_runtime.g1d_kinematics_unirobot import UniRobotKinematics
 
-            poses = PinKinematics().solve_fk([0.0] * 7, [0.0] * 7)
+            poses = UniRobotKinematics().solve_fk([0.0] * 7, [0.0] * 7)
             target = {
                 side: {
-                    "frame_id": "g1d_base",
+                    "frame_id": "unirobot_g1d_fixed_base",
                     "position_m": list(p.position_m),
                     "orientation_xyzw": list(p.orientation_xyzw),
                 }
@@ -256,29 +261,16 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
                 )
                 assert query("state", {})["outputs"]["action_ready"] is False
             return
-        # Independent reference fixture from the URDF chain, not child-process FK.
-        targets = {
-            "left": {
-                "frame_id": "g1d_base",
-                "position_m": [0.192172736674722, 0.189179704321410, 0.001816614310073],
-                "orientation_xyzw": [
-                    0.154489414151274,
-                    0.168929134576250,
-                    0.006023824933432,
-                    0.973426772767057,
-                ],
-            },
-            "right": {
-                "frame_id": "g1d_base",
-                "position_m": [0.283835956813965, -0.133142519604804, 0.078952906599031],
-                "orientation_xyzw": [
-                    -0.127835655672707,
-                    0.066340872415173,
-                    0.010632934227831,
-                    0.989516990503766,
-                ],
-            },
-        }
+        # Poses recorded from the original UniRobot model, not child-process FK.
+        from PhyAgentOS.skill_runtime.g1d_kinematics_pin import matrix_to_quaternion
+        targets = {}
+        for side in ("left", "right"):
+            matrix = oracle[side]
+            targets[side] = {
+                "frame_id": "unirobot_g1d_fixed_base",
+                "position_m": [row[3] for row in matrix[:3]],
+                "orientation_xyzw": matrix_to_quaternion([row[:3] for row in matrix[:3]]),
+            }
         plan = query("plan_pose", targets)
         assert plan["status"] == "succeeded", plan
         validate(plan["outputs"], schemas["g1d.dual_arm.plan_pose"]["output_schema"])

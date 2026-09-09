@@ -66,6 +66,29 @@ def test_replayed_ticks_do_not_renew_freshness():
     assert runtime.state()["safety_gate"] == "state_stale"
 
 
+def test_unirobot_frame_plans_with_nonzero_waist_and_rejects_old_frame():
+    from dataclasses import asdict
+    from PhyAgentOS.skill_runtime.g1d_planner import PlannerError
+
+    source = FakeLowStateSource()
+    runtime = G1DReadOnlyRuntime(BUNDLE, source=source, clock=lambda: 100.0)
+    q = [0.0] * 35
+    q[12:15] = [.2, .1, .05]
+    q[15:29] = [.26, -.01, .01, 1.09, .006, .29, .009,
+                .24, -.008, .077, 1.26, .021, -.065, -.012]
+    source.publish(make_lowstate_frame(mode_machine=5, tick=1, positions=q), received_at=100.0)
+    runtime.poll()
+    poses = runtime.kinematics.solve_fk(q[15:22], q[22:29])
+    targets = {side: {"frame_id": "unirobot_g1d_fixed_base", **asdict(pose)}
+               for side, pose in zip(("left", "right"), poses)}
+    assert runtime.plan_pose(targets)["plan_id"]
+    assert runtime._positions[12:15] == tuple(q[12:15])
+    for target in targets.values():
+        target["frame_id"] = "g1d_base"
+    with pytest.raises(PlannerError):
+        runtime.plan_pose(targets)
+
+
 def test_production_execution_composition_observes_real_bilateral_fk(tmp_path):
     from PhyAgentOS.skill_runtime.g1d_adapter import SafetyFaultError
     from PhyAgentOS.skill_runtime.g1d_execution_runtime import G1DExecutionRuntime
@@ -98,7 +121,7 @@ def test_production_execution_composition_observes_real_bilateral_fk(tmp_path):
     poses = runtime.kinematics.solve_fk(q[15:22], q[22:29])
     targets = {
         side: {
-            "frame_id": "g1d_base",
+            "frame_id": "unirobot_g1d_fixed_base",
             "position_m": list(p.position_m),
             "orientation_xyzw": list(p.orientation_xyzw),
         }

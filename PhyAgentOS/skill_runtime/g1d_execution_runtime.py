@@ -100,8 +100,6 @@ class G1DExecutionRuntime(G1DReadOnlyRuntime):
             if self._fault is not None:
                 raise SafetyFaultError("corrupt state")
             if self._positions is not None:
-                if any(abs(q) > 1e-4 for q in self._positions[12:15]):
-                    raise SafetyFaultError("neutral model locks changed")
                 if any(
                     not lower <= q <= upper
                     for q, (lower, upper) in zip(
@@ -134,7 +132,7 @@ class G1DExecutionRuntime(G1DReadOnlyRuntime):
             max_joint_acceleration_rad_per_s2=self.config["max_joint_acceleration_rad_per_s2"],
             max_joint_jerk_rad_per_s3=self.config["max_joint_jerk_rad_per_s3"],
             joint_limits_rad=self.config["joint_limits_rad"],
-            base_frame="g1d_base",
+            base_frame=self.config["base_frame"],
             require_current_state=True,
         )
         self.dex1 = dex1

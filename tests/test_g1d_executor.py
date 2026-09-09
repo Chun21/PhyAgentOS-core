@@ -585,6 +585,11 @@ def test_completed_invocation_retains_before_during_after_evidence(tmp_path):
     record = ex.execute_pose(plan_id=h.make_plan().plan_id, caller_id="a")
     run_to_completion(h)
     evidence = ex.evidence(record.invocation_id)
+    import gc
+    import json
+
+    assert all(not gc.is_tracked(frame) for frame in ex._stream_evidence)
+    assert [json.loads(raw) for raw in ex.evidence_json(record.invocation_id)] == evidence
     assert [item["phase"] for item in evidence] == ["before", "during", "after"]
     assert evidence[1]["payload"]["frames"][-1]["seq"] + 1 == record.frames_emitted
     assert evidence[2]["payload"]["status"] == "succeeded"

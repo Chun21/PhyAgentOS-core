@@ -1,5 +1,12 @@
 [
   {
+    "name": "casadi",
+    "version": "3.6.7",
+    "filename": "casadi-3.6.7-cp312-none-manylinux2014_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/5c/dd/242806ccb9d36f6c006d43ad844c752566ed8cc0c0f026a86b3c8c7c2ecb/casadi-3.6.7-cp312-none-manylinux2014_aarch64.whl",
+    "sha256": "290e92a7e2f4cecffc229dc196a85855e7dbedf6929eed1850b27e4ad8ad67f0"
+  },
+  {
     "name": "annotated-doc",
     "version": "0.0.5",
     "filename": "annotated_doc-0.0.5-py3-none-any.whl",

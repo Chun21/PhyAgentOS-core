@@ -69,16 +69,16 @@ def install(cache: Path) -> None:
         "-r",
         str(ROOT / "requirements-linux-aarch64.lock"),
     )
-    prefix = Path(sys.prefix) / "g1d-dds"
+    prefix = Path(sys.prefix) / "g1d-dds-0.10.2"
     with tempfile.TemporaryDirectory(prefix="g1d-dds-build-") as temporary:
         directory = Path(temporary)
-        with tarfile.open(cache / "cyclonedds-core-11.0.1.tar.gz") as archive:
+        with tarfile.open(cache / "cyclonedds-core-0.10.2.tar.gz") as archive:
             archive.extractall(directory, filter="data")
         build = directory / "build"
         run(
             "cmake",
             "-S",
-            str(directory / "cyclonedds-11.0.1"),
+            str(directory / "cyclonedds-0.10.2"),
             "-B",
             str(build),
             f"-DCMAKE_INSTALL_PREFIX={prefix}",
@@ -86,11 +86,17 @@ def install(cache: Path) -> None:
             "-DBUILD_TESTING=OFF",
             "-DENABLE_SSL=OFF",
             "-DENABLE_SECURITY=OFF",
+            "-DENABLE_SHM=OFF",
             "-DCMAKE_BUILD_TYPE=Release",
         )
         run("cmake", "--build", str(build), "--parallel", "2")
         run("cmake", "--install", str(build))
-        env = {**os.environ, "CYCLONEDDS_HOME": str(prefix)}
+        env = {
+            **os.environ,
+            "CYCLONEDDS_HOME": str(prefix),
+            "LD_LIBRARY_PATH": f"{prefix}/lib:" + os.environ.get("LD_LIBRARY_PATH", ""),
+            "LDFLAGS": f"-Wl,-rpath,{prefix}/lib " + os.environ.get("LDFLAGS", ""),
+        }
         run(
             sys.executable,
             "-m",
@@ -99,7 +105,7 @@ def install(cache: Path) -> None:
             "--no-index",
             "--no-deps",
             "--no-build-isolation",
-            str(cache / "cyclonedds-11.0.1.tar.gz"),
+            str(cache / "cyclonedds-0.10.2.tar.gz"),
             env=env,
         )
     run(sys.executable, "-m", "pip", "check")

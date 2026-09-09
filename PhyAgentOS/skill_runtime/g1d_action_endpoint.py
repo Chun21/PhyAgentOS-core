@@ -14,6 +14,7 @@ from forge_tool import (
     ToolResult,
     ToolResultResponse,
 )
+from forge_tool.wire import ToolProtocolError
 
 from PhyAgentOS.skill_runtime.g1d_adapter import AdapterError
 from PhyAgentOS.skill_runtime.g1d_executor import ExecutorError, G1DExecutor
@@ -39,6 +40,10 @@ class G1DActionEndpoint:
             self._stops[key] = outcome
             self._events[key] = events
             return ToolAccepted(details={"status": outcome})
+        if context.caller_id is not None:
+            arguments.setdefault("caller_id", context.caller_id)
+        if not arguments.get("caller_id"):
+            raise ToolEndpointError(ToolError("caller_required", "A caller identity is required"))
         if context.caller_id is not None and context.caller_id != arguments["caller_id"]:
             raise ToolEndpointError(
                 ToolError("caller_mismatch", "Gateway caller differs from arguments")
@@ -138,5 +143,11 @@ class G1DActionEndpoint:
             # Unknown has no terminal event in Forge; status/result reconciliation
             # carries its authoritative outcome without disguising it as failure.
             if event_type is not None:
-                await events.emit(ToolEvent(event_type))
+                try:
+                    await events.emit(ToolEvent(event_type))
+                except ToolProtocolError as error:
+                    # A status/result request can establish the same terminal
+                    # outcome before this notification reaches the handler.
+                    if error.code != "FORGE_ENDPOINT_EVENT_AFTER_TERMINAL":
+                        raise
             del self._events[key]
