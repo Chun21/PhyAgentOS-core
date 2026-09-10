@@ -198,7 +198,7 @@ def test_installed_gateway_state_plan_actions_and_no_lowcmd(tmp_path, monkeypatc
 
     try:
         discovery = until(lambda: client.get("/tools").json())
-        assert len(discovery["data"]["tools"]) == 4
+        assert len(discovery["data"]["tools"]) == 7
         assert query("state", {})["outputs"]["safety_gate"] == "state_unavailable"
         publisher.start()
         state = until(

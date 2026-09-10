@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import threading
 import time
@@ -40,8 +41,11 @@ from forge_tool.handler import ToolEndpointHandler
 from jsonschema import Draft202012Validator, ValidationError
 
 from PhyAgentOS.skill_runtime.g1d_action_endpoint import G1DActionEndpoint
+from PhyAgentOS.skill_runtime.g1d_adapter import AdapterError
 from PhyAgentOS.skill_runtime.g1d_bridge import CycloneLowStateSource
+from PhyAgentOS.skill_runtime.g1d_dex1 import Dex1Error
 from PhyAgentOS.skill_runtime.g1d_execution_runtime import G1DExecutionRuntime
+from PhyAgentOS.skill_runtime.g1d_executor import ExecutorError
 from PhyAgentOS.skill_runtime.g1d_planner import PlannerError
 from PhyAgentOS.skill_runtime.g1d_runtime import G1DReadOnlyRuntime
 
@@ -63,14 +67,20 @@ class ReadOnlyEndpoint:
     async def query(self, request: Any, context: Any) -> ToolResult:
         self.validate(request, context)
         try:
-            outputs = (
-                self.runtime.state()
-                if context.operation == "state"
-                else self.runtime.plan_pose(dict(request.arguments))
-            )
+            if context.operation == "state":
+                outputs = self.runtime.state()
+            elif context.operation == "camera_state":
+                outputs = self.runtime.cameras.state()
+            elif context.operation == "camera_observe":
+                outputs = await asyncio.to_thread(self.runtime.cameras.observe, **dict(request.arguments))
+            elif context.operation == "plan_gripper":
+                outputs = self.runtime.plan_gripper(dict(request.arguments))
+            else:
+                outputs = self.runtime.plan_pose(dict(request.arguments))
             return ToolResult("succeeded", outputs=outputs)
-        except (PlannerError, ValueError, TypeError) as error:
-            return ToolResult("failed", error=ToolError("plan_rejected", str(error)))
+        except (PlannerError, AdapterError, Dex1Error, ExecutorError, ValueError, TypeError) as error:
+            code = "camera_unavailable" if context.operation.startswith("camera_") else "plan_rejected"
+            return ToolResult("failed", error=ToolError(code, str(error)))
 
     async def start(self, request: Any, context: Any, events: Any) -> ToolAccepted:
         self.validate(request, context)
@@ -107,6 +117,11 @@ class G1DGateway:
 
     def __init__(self, runtime: G1DReadOnlyRuntime) -> None:
         self.runtime = runtime
+        from PhyAgentOS.skill_runtime.g1d_camera import TeleImagerCameras
+
+        camera_config = runtime.root / "profiles/real-g1d/camera.json"
+        runtime.cameras = TeleImagerCameras(json.loads(camera_config.read_text()) if camera_config.exists()
+            else {"host": "127.0.0.1", "request_port": 60000, "stream_bindings": {}})
         self.action_endpoint = (
             G1DActionEndpoint(runtime.executor, ReadOnlyEndpoint(runtime).validate)
             if isinstance(runtime, G1DExecutionRuntime)
@@ -192,6 +207,7 @@ class G1DGateway:
         )
 
     def start(self) -> None:
+        self.runtime.cameras.start()
         self._announce()
         if isinstance(self.runtime, G1DExecutionRuntime):
             self.runtime.control.start()
@@ -201,6 +217,7 @@ class G1DGateway:
         self.stop_event.set()
         self.worker.join(timeout=5)
         self.tool_gateway.close()
+        self.runtime.cameras.close()
         if isinstance(self.runtime, G1DExecutionRuntime):
             self.runtime.control.close()
         if self.worker.is_alive():
@@ -251,6 +268,18 @@ class G1DGateway:
 
         app = FastAPI(lifespan=lifespan)
         register_tool_routes(app, self)
+
+        @app.get("/g1d/camera/frames/{frame_id}.jpg")
+        def camera_image(frame_id: str):
+            from fastapi import HTTPException, Response
+
+            from PhyAgentOS.skill_runtime.g1d_camera import CameraUnavailableError
+
+            try:
+                return Response(self.runtime.cameras.image(frame_id), media_type="image/jpeg",
+                                headers={"Cache-Control": "no-store"})
+            except CameraUnavailableError as exc:
+                raise HTTPException(404, str(exc)) from exc
         if isinstance(self.runtime, G1DExecutionRuntime):
             executor = self.runtime.executor
 
@@ -355,8 +384,6 @@ def main() -> None:
         if args.max_arm_excursion_rad is not None:
             config["max_arm_excursion_rad"] = args.max_arm_excursion_rad
         domain = int(os.environ.get("PAOS_G1D_DDS_DOMAIN", "0"))
-        if args.operator_confirmed and config.get("dex1"):
-            parser.error("native arm-only session does not enable Dex1 commands")
         dex_bridge = (
             CycloneDex1Bridge(domain_id=domain, **config["dex1"]) if config.get("dex1") else None
         )
@@ -370,13 +397,15 @@ def main() -> None:
         sink: Any = G1DCommandSink(CycloneLowCmdSink(domain_id=domain), dex_bridge)
         if args.operator_confirmed:
             from PhyAgentOS.skill_runtime.g1d_control_session import ControlSession, LowCmdDiscovery
+            from PhyAgentOS.skill_runtime.g1d_gripper_hold import GripperHold
             from PhyAgentOS.skill_runtime.g1d_motion_switcher import MotionSwitcher
 
             session = ControlSession(
                 config=config, source=source,
                 sink=sink.arm, motion=MotionSwitcher(domain), discovery=LowCmdDiscovery(domain),
                 lock_path=args.controller_lock, duration_s=args.session_seconds,
-                agent_lease=args.agent_lease)
+                agent_lease=args.agent_lease,
+                grippers=GripperHold(dex_bridge, dex1, time.monotonic) if dex_bridge else None)
             sink = session
             ownership = session.require
         else:

@@ -1,5 +1,6 @@
 {
   "approved_mode": 5,
+  "dex1": {"verified_open_q": 5.4, "verified_closed_q": 0.0},
   "max_arm_excursion_rad": 0.20,
   "modes": [0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0],
   "gains": [

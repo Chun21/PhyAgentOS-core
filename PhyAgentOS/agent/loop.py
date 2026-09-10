@@ -233,6 +233,7 @@ class AgentLoop:
                 self.forge_tool_client,
                 invocation_ids=self.forge_tool_invocation_ids,
                 coordinator=self.forge_task_coordinator,
+                provider=self.provider,
             ):
                 self.tools.register(tool)
 

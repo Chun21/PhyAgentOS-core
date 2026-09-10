@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass, field
 
 from cyclonedds import idl
+from cyclonedds.builtin import BuiltinDataReader, BuiltinTopicDcpsPublication
+from cyclonedds.core import Listener
 from cyclonedds.domain import DomainParticipant
 from cyclonedds.idl import annotations, types
 from cyclonedds.pub import DataWriter
@@ -71,6 +73,8 @@ class CycloneDex1Bridge:
         if (verified_open_q, verified_closed_q) != (5.4, 0.0):
             raise ValueError("unsupported or unverified Dex1 calibration")
         self._participant = DomainParticipant(domain_id)
+        self._discovery = BuiltinDataReader(self._participant, BuiltinTopicDcpsPublication)
+        self._publications = {}
         self._readers = {
             side: DataReader(
                 self._participant,
@@ -79,12 +83,15 @@ class CycloneDex1Bridge:
             )
             for side in ("left", "right")
         }
-        self._writers = {
-            side: DataWriter(
-                self._participant, Topic(self._participant, f"rt/dex1/{side}/cmd", DexMotorCmds)
-            )
-            for side in ("left", "right")
-        }
+        self._matched = {side: 0 for side in ("left", "right")}
+        self._writers = {}
+        for side in ("left", "right"):
+            def matched(writer, status, selected=side):
+                self._matched[selected] = status.current_count
+
+            self._writers[side] = DataWriter(
+                self._participant, Topic(self._participant, f"rt/dex1/{side}/cmd", DexMotorCmds),
+                listener=Listener(on_publication_matched=matched))
 
     def read(self, side: str) -> tuple[float, float] | None:
         samples = self._readers[side].take(1)
@@ -104,6 +111,20 @@ class CycloneDex1Bridge:
         self._writers[sample.command.side].write(
             DexMotorCmds([DexMotorCmd(1, opening * 5.4, 0.0, 0.0, 5.0, 0.05, [0, 0, 0])])
         )
+
+    def require_exclusive(self, side):
+        for item in self._discovery.take(1024):
+            key = str(item.key)
+            if item.sample_info.valid_data:
+                self._publications[key] = item.topic_name
+            else:
+                self._publications.pop(key, None)
+        own = str(self._writers[side].guid)
+        topic = f"rt/dex1/{side}/cmd"
+        if any(key != own and name == topic for key, name in self._publications.items()):
+            raise Dex1Error(f"competing Dex1 {side} command writer")
+        if not self._matched[side]:
+            raise Dex1Error(f"Dex1 {side} command receiver unavailable")
 
 
 class G1DCommandSink:

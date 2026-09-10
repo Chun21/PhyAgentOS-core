@@ -1,7 +1,7 @@
 manifest_version: 2
 name: g1d-manipulation
-version: 0.3.2
-description: Supervised visual-free dual-arm manipulation for Unitree G1_D.
+version: 0.3.3
+description: Supervised G1_D dual arms, Dex1 grippers and TeleImager camera observations.
 skill_document: SKILL.md
 gateway_url: http://127.0.0.1:19083
 required_tools:
@@ -9,6 +9,9 @@ required_tools:
 - g1d.dual_arm.execute_pose
 - g1d.dual_arm.state
 - g1d.dual_arm.stop
+- g1d.dual_arm.plan_gripper
+- g1d.dual_arm.camera_state
+- g1d.dual_arm.camera_observe
 profiles:
   real-g1d:
     dataflow: profiles/real-g1d/dataflow.yaml
@@ -26,10 +29,10 @@ artifacts:
   resolver: local
   nodes:
     g1d-runtime:
-      artifact_id: g1d-runtime-0.3.2-linux-aarch64
-      version: 0.3.2
+      artifact_id: g1d-runtime-0.3.3-linux-aarch64
+      version: 0.3.3
       platform: linux
       arch: aarch64
       artifact_type: executable_tar_gz
       entrypoint: g1d-runtime
-      sha256: c47b531542dd3a931b90c144394cb8123bae3c60683a08b4966a0935efb6901b
+      sha256: 8be79788627350a211b9bc8df79e9a39380c2e0f6c5b27f860949e4b667b6f0f

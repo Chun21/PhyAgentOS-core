@@ -32,14 +32,22 @@ remain active; a fault ends the session and is not automatically rearmed.
 Only one physical CLI may own the Runtime. Exit the old controlling CLI before
 opening another one. An old timed Runtime must be stopped before upgrading.
 
+Dex1 targets use the same lease: `plan_gripper` followed by `execute_pose` holds
+both arms at measured joints and ramps the selected gripper opening. The session
+refreshes requested grippers between Actions; cancellation freezes their last
+command. Feedback/ownership loss stops gripper refresh. Closing the TUI ends
+refresh, and the external service enters BRAKE after one second without commands.
+An object is not guaranteed to remain held after session exit. Camera queries
+are read-only and available without physical control; see `SKILL.md` for examples.
+
 The standalone diagnostic launcher retains its fixed `--session-seconds` limit.
 Do not run it alongside `paos agent --physical`:
 
 ```bash
 conda activate phyagent
-export PAOS_SKILL_ROOT=/home/unitree/phyagent-deploy/agent-control
+export PAOS_SKILL_ROOT="$HOME/.PhyAgentOS/skills/g1d-manipulation"
 export CYCLONEDDS_URI=file:///home/unitree/cyclonedds_ws/cyclonedds.xml
-bash "$PAOS_SKILL_ROOT/g1d_control.sh" --operator-confirmed --session-seconds 120
+bash "$HOME/PhyAgentOS-core/scripts/g1d_control.sh" --operator-confirmed --session-seconds 120
 ```
 
 The gateway listens on robot localhost port 19083. In another development-host terminal:

@@ -2,7 +2,8 @@
 
 This #17 slice starts the actual Forge Tool Gateway with an embedded
 ToolEndpoint, the internal DDS bridge, and the UniRobot-aligned CasADi/IPOPT planner.
-Exactly four Tools are exposed. `execute_pose` ends with `action_not_ready`;
+Seven Tools are exposed, including camera status/observation and gripper planning.
+Camera failures do not block arm discovery. `execute_pose` ends with `action_not_ready`;
 `stop` ends with `no_active_operation` (`already_stopped` in error details).
 These are pre-effect rejections; no operation is admitted to physical execution.
 

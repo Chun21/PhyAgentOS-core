@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import enum
 import math
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -124,6 +125,7 @@ class Dex1Integration:
         if not math.isfinite(max_state_age_s) or max_state_age_s <= 0:
             raise Dex1Error("max_state_age_s must be positive")
         self._clock = clock
+        self._lock = threading.RLock()
         self._max_state_age_s = float(max_state_age_s)
         self._latest: dict[str, tuple[float, float]] = {}
         self._sources: dict[str, Dex1StateSource] = dict(sources or {})
@@ -138,6 +140,11 @@ class Dex1Integration:
 
     def readiness(self, side: str) -> Dex1Readiness:
         """Freshness and timeout indication for one side."""
+
+        with self._lock:
+            return self._readiness(side)
+
+    def _readiness(self, side: str) -> Dex1Readiness:
 
         _validate_side(side)
         source = self._sources.get(side)

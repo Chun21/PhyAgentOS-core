@@ -91,6 +91,46 @@ def test_start_holds_nonzero_pose_and_close_restores(tmp_path):
     assert len(session.sink.samples) == count
 
 
+def test_gripper_refresh_is_owned_by_session_and_ends_on_close(tmp_path):
+    from PhyAgentOS.skill_runtime.g1d_dex1 import Dex1CommandSample, Dex1Integration
+    from PhyAgentOS.skill_runtime.g1d_gripper_hold import GripperHold
+
+    class Bridge:
+        samples = []
+
+        def read(self, side):
+            return .5, time.monotonic()
+
+        def require_exclusive(self, side):
+            pass
+
+        def write(self, sample):
+            self.samples.append(sample)
+
+    bridge = Bridge()
+    dex = Dex1Integration(clock=time.monotonic, sources={"left": bridge})
+    session = make_session(tmp_path)
+    session.grippers = GripperHold(bridge, dex, time.monotonic)
+    try:
+        session.start()
+        assert not bridge.samples  # Startup does not move fingers.
+        session.write(Dex1CommandSample(time.monotonic(), dex.command("left", .8)))
+        wait_for(lambda: len(bridge.samples) >= 3)
+        session.stop_grippers()
+        last = session.gripper_status()["left"]["commanded_opening"]
+        assert session.gripper_status()["left"]["target_opening"] == last
+        count = len(bridge.samples)
+        wait_for(lambda: len(bridge.samples) > count + 2)
+        assert bridge.samples[-1].command.opening == last
+    finally:
+        session.close()
+    count = len(bridge.samples)
+    time.sleep(.06)
+    assert len(bridge.samples) == count
+    with pytest.raises(SafetyFaultError):
+        session.write(Dex1CommandSample(time.monotonic(), dex.command("left", 0.)))
+
+
 def test_already_released_refuses_without_writes_or_restore(tmp_path):
     session = make_session(tmp_path)
     session.motion.mode = ""

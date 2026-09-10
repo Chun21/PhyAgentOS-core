@@ -579,6 +579,35 @@ class G1DPlanner:
         self._evict_expired(now)
         return plan
 
+    def plan_gripper(self, *, openings: Mapping[str, float], current_q: Sequence[float]) -> PosePlan:
+        """Hold measured arm joints exactly, without invoking IK for a finger action."""
+        from PhyAgentOS.skill_runtime.g1d_dex1 import validate_opening
+
+        if not openings or set(openings) - {"left", "right"}:
+            raise PoseValidationError("request left and/or right gripper opening")
+        openings = {side: validate_opening(value) for side, value in openings.items()}
+        if len(current_q) != TOTAL_MOTOR_SLOTS or any(not math.isfinite(q) for q in current_q):
+            raise PoseValidationError("current state requires 35 finite joint values")
+        solution = JointSolution(tuple(current_q[15:22]), tuple(current_q[22:29]))
+        self._validate_solution(solution)
+        poses = self._kinematics.solve_fk(solution.left_q, solution.right_q)
+        targets = tuple(ArmPose(self._base_frame, pose.position_m, pose.orientation_xyzw,
+                               openings.get(side)) for side, pose in zip(("left", "right"), poses))
+        now = self._clock()
+        plan = PosePlan(
+            plan_id=f"plan-{uuid.uuid4().hex}", created_at=now, expires_at=now + self._plan_ttl_s,
+            binding=PlanBinding(self._skill_version, self._runtime_instance_id,
+                digest_json({"operation": "gripper", "openings": openings, "hold": list(current_q[15:29])}),
+                self._profile_digest),
+            joint_solution=solution,
+            checks=(PlanCheck("measured_joint_hold", True, "both arms hold measured joints; no IK"),),
+            trajectory=self._plan_trajectory(solution, current_q), targets=targets,
+            start_q=tuple(current_q[15:29]), dex1_left_opening=openings.get("left"),
+            dex1_right_opening=openings.get("right"))
+        self._plans[plan.plan_id] = plan
+        self._evict_expired(now)
+        return plan
+
     def plan_wave(self, *, left: Mapping[str, Any], right: Mapping[str, Any],
                   current_q: Sequence[float], arm: str = "right") -> PosePlan:
         """Solve a greeting in the pinned UniRobot frame, keeping the other arm still."""

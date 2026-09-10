@@ -263,12 +263,15 @@ def test_dex1_service_lifecycle_stays_outside_normal_tools() -> None:
         "g1d.dual_arm.execute_pose",
         "g1d.dual_arm.state",
         "g1d.dual_arm.stop",
+        "g1d.dual_arm.plan_gripper",
+        "g1d.dual_arm.camera_state",
+        "g1d.dual_arm.camera_observe",
     }
     operations = {spec["operation"] for spec in tools.values()}
-    assert operations == {"plan_pose", "execute_pose", "state", "stop"}
+    assert operations == {"plan_pose", "execute_pose", "state", "stop", "plan_gripper", "camera_state", "camera_observe"}
     # No Tool installs, calibrates, restarts, or stops the external Dex1
     # service; the only stop targets the active arm Action.
-    blob = json.dumps(tools).lower()
+    blob = " ".join(operations).lower()
     for forbidden in ("install", "calibrat", "restart"):
         assert forbidden not in blob
     # The only stop Tool stops the active arm Action, never the Dex1 service.

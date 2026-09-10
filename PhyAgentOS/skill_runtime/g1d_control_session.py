@@ -57,7 +57,7 @@ class ControlSession:
 
     def __init__(self, *, config, source, sink, motion, discovery,
                  lock_path: Path, duration_s=300.0, clock=time.monotonic,
-                 agent_lease: Path | None = None):
+                 agent_lease: Path | None = None, grippers=None):
         validate_control_profile(config)
         if not 10 <= duration_s <= 1800:
             raise ValueError("operator session duration must be 10..1800 seconds")
@@ -65,6 +65,7 @@ class ControlSession:
         self.motion, self.discovery = motion, discovery
         self.lock_path, self.duration_s, self.clock = lock_path, duration_s, clock
         self.agent_lease = agent_lease
+        self.grippers = grippers
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._writer_thread = None
@@ -188,8 +189,22 @@ class ControlSession:
             if any(abs(value - self._initial[15+i]) > self.config["max_arm_excursion_rad"]
                    for i, value in enumerate(q)):
                 raise SafetyFaultError("plan exceeds operator session excursion bound")
+        openings = {side: getattr(plan, f"dex1_{side}_opening", None) for side in ("left", "right")}
+        if any(value is not None for value in openings.values()):
+            if self.grippers is None:
+                raise SafetyFaultError("Dex1 session unavailable")
+            with self._lock:
+                self.grippers.validate_plan(openings)
 
     def write(self, sample):
+        from PhyAgentOS.skill_runtime.g1d_dex1 import Dex1CommandSample
+
+        if isinstance(sample, Dex1CommandSample) and self.grippers is not None:
+            with self._lock:
+                self.require()
+                self._read()
+                self.grippers.write(sample)
+            return
         if not isinstance(sample, StreamSample):
             raise SafetyFaultError("arm session does not accept gripper commands")
         with self._lock:
@@ -220,6 +235,15 @@ class ControlSession:
             self._last_update = self.clock()
             self._moving = any(abs(m.dq) > 1e-6 for m in frame.motor_cmd[15:29])
 
+    def stop_grippers(self):
+        with self._lock:
+            if self.grippers is not None:
+                self.grippers.freeze()
+
+    def gripper_status(self):
+        with self._lock:
+            return self.grippers.state() if self.grippers is not None else {}
+
     def _record_send(self):
         now = self.clock()
         if self._last_sent is not None:
@@ -233,6 +257,8 @@ class ControlSession:
                 with self._lock:
                     self.require()
                     self._read()
+                    if self.grippers is not None:
+                        self.grippers.tick()
                     if self._moving:
                         if self.clock() - self._last_update > .02:
                             raise SafetyFaultError("trajectory writer stalled")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -60,6 +62,26 @@ class ForgeToolClient:
 
     async def list_tools(self) -> dict[str, Any]:
         return await self._request("GET", "/tools", expected_statuses={200})
+
+    async def read_camera_image(self, image: dict[str, Any]) -> bytes:
+        """Fetch a bounded immutable image from this Gateway, never a supplied host."""
+        path = image.get("path", "")
+        if not isinstance(path, str) or not re.fullmatch(r"/g1d/camera/frames/[0-9a-f]{32}\.jpg", path):
+            raise ForgeToolAPIError("invalid camera artifact path")
+        try:
+            async with self._client.stream("GET", path, follow_redirects=False) as response:
+                if response.status_code != 200 or response.headers.get("content-type", "").split(";")[0] != "image/jpeg":
+                    raise ForgeToolAPIError("camera image unavailable; request a new observation")
+                raw = bytearray()
+                async for chunk in response.aiter_bytes():
+                    raw.extend(chunk)
+                    if len(raw) > 4_000_000:
+                        raise ForgeToolAPIError("camera image exceeds size limit")
+        except httpx.HTTPError as exc:
+            raise ForgeToolAPIError("camera image transport failed") from exc
+        if not raw.startswith(b"\xff\xd8") or hashlib.sha256(raw).hexdigest() != image.get("sha256"):
+            raise ForgeToolAPIError("camera image digest/format mismatch")
+        return bytes(raw)
 
     async def get_tool(self, tool_id: str) -> dict[str, Any]:
         return await self._request(

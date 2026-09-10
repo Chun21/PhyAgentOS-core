@@ -730,6 +730,11 @@ class G1DExecutor:
             self._accepted_since = now
         return now - self._accepted_since >= 2.0
 
+    def _freeze_grippers(self) -> None:
+        freeze = getattr(self._sink, "stop_grippers", None)
+        if freeze is not None:
+            freeze()
+
     def _emit_dex1(self, t: float) -> None:
         """Stream requested opening commands to the external Dex1 topics."""
 
@@ -832,6 +837,8 @@ class G1DExecutor:
     def _finish(self, invocation: Invocation, status: ActionStatus, *, reason: str | None) -> None:
         """Terminate an invocation and release the active-operation marker."""
 
+        if status is not ActionStatus.SUCCEEDED:
+            self._freeze_grippers()
         self._terminate(invocation, status, reason=reason)
         self._adapter.set_active_operation(None)
 
@@ -840,6 +847,7 @@ class G1DExecutor:
     # ------------------------------------------------------------------
 
     def _request_stop(self, invocation: Invocation) -> None:
+        self._freeze_grippers()
         now = self._clock()
         if self._seq == 0:
             # Pre-effect cancellation: nothing has streamed yet.
@@ -850,6 +858,7 @@ class G1DExecutor:
     def _begin_stop(self, invocation: Invocation, now: float, *, reason: str) -> None:
         """Enter stopping: bounded hold within the stop margin, then terminal."""
 
+        self._freeze_grippers()
         assert self._last_command is not None
         q = [self._last_command.motor_cmd[i].q for i in ARM_SLOTS]
         dq = [self._last_command.motor_cmd[i].dq for i in ARM_SLOTS]

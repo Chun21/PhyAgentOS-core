@@ -13,7 +13,7 @@ from scripts.package_skill import package
 BUNDLE = Path(__file__).parents[1] / "bundles" / "g1d-manipulation"
 
 
-def test_g1d_bundle_manifest_has_one_real_profile_and_four_tools() -> None:
+def test_g1d_bundle_manifest_has_one_real_profile_and_seven_tools() -> None:
     manifest = load_manifest(BUNDLE / "skill.yaml")
 
     assert manifest.manifest_version == 2
@@ -27,16 +27,22 @@ def test_g1d_bundle_manifest_has_one_real_profile_and_four_tools() -> None:
         "g1d.dual_arm.execute_pose",
         "g1d.dual_arm.state",
         "g1d.dual_arm.stop",
+        "g1d.dual_arm.plan_gripper",
+        "g1d.dual_arm.camera_state",
+        "g1d.dual_arm.camera_observe",
     )
 
 
-def test_tool_specs_are_exactly_four_and_strict() -> None:
+def test_tool_specs_are_exactly_seven_and_strict() -> None:
     specs = json.loads((BUNDLE / "tools" / "tools.json").read_text())
     assert set(specs) == {
         "g1d.dual_arm.plan_pose",
         "g1d.dual_arm.execute_pose",
         "g1d.dual_arm.state",
         "g1d.dual_arm.stop",
+        "g1d.dual_arm.plan_gripper",
+        "g1d.dual_arm.camera_state",
+        "g1d.dual_arm.camera_observe",
     }
     assert {spec["semantics"] for spec in specs.values()} == {"query", "action"}
     assert all(spec["input_schema"]["additionalProperties"] is False for spec in specs.values())
@@ -57,6 +63,9 @@ def test_mock_runtime_lifecycle_and_gateway_context_are_robot_free() -> None:
         "g1d.dual_arm.execute_pose",
         "g1d.dual_arm.state",
         "g1d.dual_arm.stop",
+        "g1d.dual_arm.plan_gripper",
+        "g1d.dual_arm.camera_state",
+        "g1d.dual_arm.camera_observe",
     }
     assert runtime.gateway_tools()["ok"] is True
     assert runtime.gateway_context("g1d.dual_arm.execute_pose")["data"]["ready"] is True

@@ -58,7 +58,7 @@ class _ApprovedAdapter(G1DAdapter):
 
 
 class G1DExecutionRuntime(G1DReadOnlyRuntime):
-    """Same model and four tools, with supervised control and durable execution.
+    """Supervised arm and gripper control with durable execution and camera queries.
 
     require_ownership must raise AdapterError whenever the approved handoff,
     exclusive lowcmd lease, operator safety gate, or verified limits lapse.
@@ -136,6 +136,7 @@ class G1DExecutionRuntime(G1DReadOnlyRuntime):
             require_current_state=True,
         )
         self.dex1 = dex1
+        self.gripper_status = getattr(sink, "gripper_status", None)
         self.executor = G1DExecutor(
             adapter=self.adapter,
             planner=self.planner,
@@ -167,7 +168,10 @@ class G1DExecutionRuntime(G1DReadOnlyRuntime):
         ):
             state["action_ready"] = False
             state["safety_gate"] = result["safety_gate"]
-        return {**result, **state}
+        result = {**result, **state}
+        if self.gripper_status is not None:
+            result["gripper_control"] = self.gripper_status()
+        return result
 
     def _validate_dex1(self, arguments: dict[str, Any]) -> None:
         requested = {
@@ -185,3 +189,15 @@ class G1DExecutionRuntime(G1DReadOnlyRuntime):
         # The inherited planner needs the observed-state gate; control admission
         # remains independently enforced by the executor and supervisor.
         return self.executor.while_idle(lambda: G1DReadOnlyRuntime.plan_pose(self, arguments))
+
+    def plan_gripper(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        def plan():
+            with self.lock:
+                self.adapter.require_ready()
+                if self.dex1 is None:
+                    raise PlannerError("requested Dex1 service is unavailable")
+                self.dex1.require_ready_for(arguments)
+                assert self._positions is not None
+                return self._plan_response(self.planner.plan_gripper(
+                    openings=arguments, current_q=self._positions))
+        return self.executor.while_idle(plan)

@@ -51,9 +51,12 @@ class MockSkillRuntime:
             "g1d.dual_arm.execute_pose": "action",
             "g1d.dual_arm.state": "query",
             "g1d.dual_arm.stop": "action",
+            "g1d.dual_arm.plan_gripper": "query",
+            "g1d.dual_arm.camera_state": "query",
+            "g1d.dual_arm.camera_observe": "query",
         }
         if set(tools) != set(expected_semantics):
-            raise MockRuntimeError("g1d Bundle must expose exactly four ToolSpecs")
+            raise MockRuntimeError("g1d Bundle must expose exactly seven ToolSpecs")
         for tool_id, semantics in expected_semantics.items():
             spec = tools[tool_id]
             if not isinstance(spec, dict) or spec.get("semantics") != semantics:

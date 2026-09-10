@@ -37,6 +37,19 @@ def test_dex1_go_wire_opening_direction_and_faults(monkeypatch):
         time.sleep(0.01)
         received = reader.take(1)
     assert received and received[0].cmds[0].q == pytest.approx(5.4)
+    bridge.require_exclusive("left")
+    competing = DataWriter(participant, Topic(participant, "rt/dex1/left/cmd", DexMotorCmds))
+    from PhyAgentOS.skill_runtime.g1d_dex1 import Dex1Error
+    end = time.monotonic() + 3
+    while True:
+        try:
+            bridge.require_exclusive("left")
+        except Dex1Error as error:
+            assert "competing" in str(error)
+            break
+        assert time.monotonic() < end
+        time.sleep(.01)
+    assert competing.guid != bridge._writers["left"].guid
     msg = DexMotorStates([DexMotorState(1, 2.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 20, 0, [0, 0])])
     end = time.monotonic() + 3
     while time.monotonic() < end:

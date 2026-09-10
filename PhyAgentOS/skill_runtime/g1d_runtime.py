@@ -195,6 +195,9 @@ class G1DReadOnlyRuntime:
         if any("dex1" in arguments[side] for side in ("left", "right")):
             raise PlannerError("requested Dex1 readiness is unavailable in the read-only profile")
 
+    def plan_gripper(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        raise PlannerError("Dex1 control requires paos agent --physical")
+
     def plan_pose(self, arguments: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
             self._validate_dex1(arguments)
@@ -214,14 +217,12 @@ class G1DReadOnlyRuntime:
                 raise PlannerError("bilateral plan validation failed")
             if "deadline_s" in arguments and plan.trajectory.duration_s > arguments["deadline_s"]:
                 raise PlannerError("trajectory exceeds requested deadline")
-            binding = asdict(plan.binding)
-            binding.pop(
-                "profile_digest"
-            )  # Kept internally; the public schema is intentionally narrow.
-            return {
-                "plan_id": plan.plan_id,
+            return self._plan_response(plan)
+
+    def _plan_response(self, plan):
+        binding = asdict(plan.binding)
+        binding.pop("profile_digest")
+        return {"plan_id": plan.plan_id,
                 "expires_at": datetime.fromtimestamp(
-                    time.time() + max(0.0, plan.expires_at - self.clock()), timezone.utc
-                ).isoformat(),
-                "binding": binding,
-            }
+                    time.time() + max(0.0, plan.expires_at - self.clock()), timezone.utc).isoformat(),
+                "binding": binding}

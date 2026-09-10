@@ -304,6 +304,7 @@
             }
           }
         },
+        "gripper_control": {"type": "object", "description": "Per-side command_active, target_opening, commanded_opening and refresh fault. Feedback can be healthy while commands are inactive."},
         "mode_machine": {
           "type": "integer"
         },
@@ -355,6 +356,51 @@
         }
       }
     }
+  },
+  "g1d.dual_arm.plan_gripper": {
+    "tool_id": "g1d.dual_arm.plan_gripper",
+    "semantics": "query", "endpoint_id": "g1d.dual_arm", "operation": "plan_gripper",
+    "description": "Plan left and/or right Dex1 opening (0 closed, 1 open); omitted gripper unchanged. Holds both measured arm joint positions exactly, without IK. Execute returned plan_id with execute_pose. Success means measured opening, not object grasp/contact. Commands ramp and persist while the physical TUI session is active.",
+    "max_concurrency": 8,
+    "input_schema": {"type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {"left": {"type": "number", "minimum": 0, "maximum": 1},
+                     "right": {"type": "number", "minimum": 0, "maximum": 1}}},
+    "output_schema": {"type": "object", "additionalProperties": false,
+      "required": ["plan_id", "expires_at", "binding"],
+      "properties": {"plan_id": {"type": "string"}, "expires_at": {"type": "string"},
+        "binding": {"type": "object", "additionalProperties": false,
+          "required": ["skill_version", "runtime_instance_id", "target_digest"],
+          "properties": {"skill_version": {"type": "string"}, "runtime_instance_id": {"type": "string"},
+                         "target_digest": {"type": "string"}}}}}
+  },
+  "g1d.dual_arm.camera_state": {
+    "tool_id": "g1d.dual_arm.camera_state",
+    "semantics": "query", "endpoint_id": "g1d.dual_arm", "operation": "camera_state",
+    "description": "Inspect TeleImager head, left wrist and right wrist stream freshness and spatial calibration availability. A missing camera does not block arms/grippers.",
+    "max_concurrency": 8,
+    "input_schema": {"type": "object", "additionalProperties": false, "properties": {}},
+    "output_schema": {"type": "object", "required": ["cameras", "spatial_targeting_ready"],
+      "properties": {"cameras": {"type": "object"}, "error": {"type": ["string", "null"]},
+        "spatial_targeting_ready": {"const": false}, "spatial_targeting_reason": {"type": "string"}},
+      "additionalProperties": false}
+  },
+  "g1d.dual_arm.camera_observe": {
+    "tool_id": "g1d.dual_arm.camera_observe",
+    "semantics": "query", "endpoint_id": "g1d.dual_arm", "operation": "camera_observe",
+    "description": "Acquire a new head/left_wrist/right_wrist JPEG and analyze its actual pixels through PAOS multimodal vision. Optional question directs visual inspection. Read outputs.vision; failed vision is not seeing. Local receive time is not camera exposure time. RGB has no verified metric depth or robot extrinsics: do not invent grasp coordinates.",
+    "max_concurrency": 1,
+    "input_schema": {"type": "object", "additionalProperties": false,
+      "properties": {"camera": {"type": "string", "enum": ["head", "left_wrist", "right_wrist"], "default": "head"},
+        "question": {"type": "string", "maxLength": 2000}}},
+    "output_schema": {"type": "object", "additionalProperties": false,
+      "required": ["camera", "frame_id", "image", "width", "height", "received_at_unix_s", "receive_age_ms", "timestamp_basis", "capture_timestamp_available", "binocular", "spatial_targeting_ready"],
+      "properties": {"camera": {"type": "string"}, "frame_id": {"type": "string"},
+        "image": {"type": "object", "additionalProperties": false, "required": ["path", "mime_type", "sha256"],
+          "properties": {"path": {"type": "string"}, "mime_type": {"const": "image/jpeg"}, "sha256": {"type": "string"}}},
+        "width": {"type": "integer"}, "height": {"type": "integer"},
+        "received_at_unix_s": {"type": "number"}, "receive_age_ms": {"type": "number"},
+        "timestamp_basis": {"const": "local_receive_only"}, "capture_timestamp_available": {"const": false},
+        "binocular": {"type": "boolean"}, "spatial_targeting_ready": {"const": false}}}
   },
   "g1d.dual_arm.stop": {
     "tool_id": "g1d.dual_arm.stop",
